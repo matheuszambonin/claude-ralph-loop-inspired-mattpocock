@@ -12,9 +12,16 @@ import {
 import { createStreamRenderer, foundPromise, paint, colors as C } from "./stream.mjs";
 import { userPluginsDir } from "./paths.mjs";
 import { ralphDir } from "./config.mjs";
-import { detect as detectKnowledgeIndex, describeMcpFailure } from "./knowledge-index.mjs";
+import { detect as detectKnowledgeIndex, render as renderKnowledgeIndex, describeMcpFailure } from "./knowledge-index.mjs";
 
-/** Lê o prompt do repo e resolve os placeholders. */
+/**
+ * Lê o prompt do repo e resolve os placeholders.
+ *
+ * `{{KNOWLEDGE_INDEX_BLOCK}}` some junto com a própria quebra de linha que o
+ * segue no template (`.replaceAll` com o `\n` no padrão de busca) — é o que
+ * garante que repositório sem índice produz um prompt byte a byte igual ao
+ * de antes desta issue, sem linha em branco sobrando no lugar do bloco.
+ */
 export function buildPrompt(root, cfg) {
   const file = path.join(root, cfg.promptFile);
   if (!existsSync(file)) {
@@ -23,12 +30,14 @@ export function buildPrompt(root, cfg) {
   const loops = (cfg.feedbackLoops ?? []).length
     ? cfg.feedbackLoops.map((cmd, i) => `${i + 1}. \`${cmd}\` — must pass`).join("\n")
     : "1. Discover this repo's checks (package.json scripts, Makefile, CI config) and run every one that applies.";
+  const { promptBlock } = renderKnowledgeIndex(detectKnowledgeIndex(root, cfg), null);
 
   return readFileSync(file, "utf8")
     .replaceAll("{{PROGRESS_FILE}}", cfg.progressFile)
     .replaceAll("{{COMPLETION_PROMISE}}", cfg.completionPromise)
     .replaceAll("{{BLOCKED_PROMISE}}", cfg.blockedPromise ?? "BLOCKED")
-    .replaceAll("{{FEEDBACK_LOOPS}}", loops);
+    .replaceAll("{{FEEDBACK_LOOPS}}", loops)
+    .replaceAll("{{KNOWLEDGE_INDEX_BLOCK}}\n", promptBlock);
 }
 
 function git(root, args) {

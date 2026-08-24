@@ -29,6 +29,26 @@ const CRG_TOOLS = [
 ];
 const CRG_EMBEDDING_TOOL = "semantic_search_nodes_tool";
 const CRG_ID = "code-review-graph";
+const GRAPHIFY_ID = "graphify";
+
+/**
+ * Dica curta por backend para o bloco de orientação (issue #4) — chaveada por
+ * `id`, não carregada no item detectado, porque é constante do backend, não
+ * dado observado. `code-review-graph` devolve caminho absoluto do host nas
+ * suas respostas (indexado por uma sessão de host, ver ADR-0002); sem a
+ * regra, o primeiro caminho que a tool devolver é um `file not found` dentro
+ * do sandbox. `graphify` é consultado em prosa — lendo o manifesto
+ * diretamente, sem tool — e reler o documento inteiro a cada consulta custa
+ * o que o índice deveria evitar.
+ *
+ * Texto em inglês, não português: este bloco vai colado dentro de
+ * `prompts/*.md`, e a convenção do repo reserva esses arquivos para inglês.
+ */
+const PROMPT_HINTS = {
+  [CRG_ID]:
+    "paths this tool returns are host-formatted (`C:\\...`); translate to the sandbox by lowercasing the drive letter and turning backslashes into slashes (`/c/...`)",
+  [GRAPHIFY_ID]: "read the manifest's navigation section, not the whole document",
+};
 
 /**
  * Um backend por assinatura de artefato em disco — mesmo padrão que
@@ -52,7 +72,7 @@ const BACKENDS = [
     },
   },
   {
-    id: "graphify",
+    id: GRAPHIFY_ID,
     label: "graphify",
     // `graphify-out/graph.json` é o manifesto que a ferramenta escreve ao
     // terminar uma rodada — a assinatura mais estável que ela expõe.
@@ -158,8 +178,10 @@ export function render(detected, probeResult) {
   if (!detected.length) return { promptBlock: "", mcpConfig: null, tools: [] };
 
   const promptBlock =
-    "Este repositório tem índice de conhecimento montado. Consulte antes de varrer arquivo:\n" +
-    detected.map((b) => `- ${b.label}: ${b.path}`).join("\n") +
+    "Knowledge index detected — consult it before you grep:\n" +
+    detected
+      .map((b) => `- ${b.label} (${b.path})` + (PROMPT_HINTS[b.id] ? `: ${PROMPT_HINTS[b.id]}` : ""))
+      .join("\n") +
     "\n";
 
   const mcpServers = {};

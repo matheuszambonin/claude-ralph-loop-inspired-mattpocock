@@ -18,6 +18,7 @@ Read only these, in this order:
 4. `CLAUDE.md` / `AGENTS.md`, `CONTEXT.md` and any ADRs under `docs/adr/`
    touching the area you are about to change.
 
+{{KNOWLEDGE_INDEX_BLOCK}}
 Do NOT survey the whole codebase. Read what the ticket needs and no more —
 every token you spend orienting is a token you don't have for the work.
 

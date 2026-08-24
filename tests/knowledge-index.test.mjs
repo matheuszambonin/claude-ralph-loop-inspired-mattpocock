@@ -118,6 +118,26 @@ test("render: backend sem tools sondáveis (graphify) não gera nenhuma tool", (
   assert.deepEqual(tools, []);
 });
 
+test("render: bloco de prompt cabe em poucas linhas, mesmo com os dois backends detectados", () => {
+  const detected = [
+    ...withCodeReviewGraphDetected(),
+    { id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() },
+  ];
+  const { promptBlock } = render(detected, null);
+  assert.ok(promptBlock.split("\n").length <= 6, promptBlock);
+});
+
+test("render: backend chaveado por caminho absoluto do host (code-review-graph) carrega a regra de tradução no bloco", () => {
+  const { promptBlock } = render(withCodeReviewGraphDetected(), null);
+  assert.match(promptBlock, /host.*sandbox/i);
+});
+
+test("render: backend em prosa (graphify) aponta a seção de navegação, não o documento inteiro", () => {
+  const detected = [{ id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() }];
+  const { promptBlock } = render(detected, null);
+  assert.match(promptBlock, /navigation section/);
+});
+
 test("describeDegradation: sem code-review-graph detectado devolve null", () => {
   assert.equal(describeDegradation([], { ollamaReachable: false }), null);
 });
