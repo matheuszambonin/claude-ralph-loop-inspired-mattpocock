@@ -16,6 +16,7 @@ import {
 } from "./sandbox.mjs";
 import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, isLoggedIn } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
+import { detect as detectKnowledgeIndex, describe as describeKnowledgeIndex } from "./knowledge-index.mjs";
 
 const root = repoRoot();
 
@@ -159,6 +160,10 @@ async function cmdDoctor() {
   cfg.feedbackLoops?.length
     ? ok(`feedback loops: ${cfg.feedbackLoops.join(", ")}`)
     : warn("nenhum feedback loop configurado — Ralph vai commitar às cegas");
+
+  // Sem índice, nenhuma linha entra aqui — é essa ausência que garante que um
+  // repositório sem índice de conhecimento produz a mesma saída de sempre.
+  for (const line of describeKnowledgeIndex(detectKnowledgeIndex(root, cfg))) ok(line);
 
   if (!(await dockerAvailable())) return bad("docker sandbox indisponível — Docker Desktop está rodando?");
   ok("docker sandbox disponível");

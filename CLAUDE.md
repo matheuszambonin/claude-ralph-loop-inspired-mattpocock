@@ -18,14 +18,17 @@ Não há build e não há dependências — `src/*.mjs` roda direto no Node 18+.
 
 ## Verificação
 
-Não existe suíte de testes. O mínimo antes de commitar:
+`tests/` roda com `node:test`, biblioteca padrão — sem dependência nova. O
+mínimo antes de commitar:
 
 ```bash
 node --check src/*.mjs
 bash -n sandbox/bootstrap.sh templates/setup.sh bin/ralph
+node --test tests/*.test.mjs
 ```
 
-Isso pega erro de sintaxe e nada mais. Mudança em `sandbox/bootstrap.sh` ou em
+Isso pega erro de sintaxe e o que `tests/` cobre — que hoje é só a costura
+pura de `src/knowledge-index.mjs`. Mudança em `sandbox/bootstrap.sh` ou em
 `src/sandbox.mjs` só está provada quando `ralph bootstrap --force` roda limpo
 num sandbox de verdade e `ralph doctor` fecha verde num repo alvo — o
 comportamento que importa está do lado de dentro do container.
