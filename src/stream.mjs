@@ -53,7 +53,7 @@ function describeTool(name, input = {}) {
 }
 
 export function createStreamRenderer({ onEvent } = {}) {
-  const state = { text: "", finalResult: null, costUsd: 0, turns: 0, isError: false, sessionId: null, skills: null };
+  const state = { text: "", finalResult: null, costUsd: 0, turns: 0, isError: false, sessionId: null, skills: null, mcpServers: null };
 
   function handle(evt) {
     onEvent?.(evt);
@@ -62,6 +62,7 @@ export function createStreamRenderer({ onEvent } = {}) {
         if (evt.subtype === "init") {
           state.sessionId = evt.session_id ?? null;
           if (evt.skills !== undefined) state.skills = evt.skills;
+          if (evt.mcp_servers !== undefined) state.mcpServers = evt.mcp_servers;
           const tools = Array.isArray(evt.tools) ? evt.tools.length : "?";
           const skills = Array.isArray(evt.skills) ? evt.skills.length : null;
           process.stdout.write(

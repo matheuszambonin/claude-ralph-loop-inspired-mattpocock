@@ -12,6 +12,7 @@ import {
 import { createStreamRenderer, foundPromise, paint, colors as C } from "./stream.mjs";
 import { userPluginsDir } from "./paths.mjs";
 import { ralphDir } from "./config.mjs";
+import { detect as detectKnowledgeIndex, describeMcpFailure } from "./knowledge-index.mjs";
 
 /** Lê o prompt do repo e resolve os placeholders. */
 export function buildPrompt(root, cfg) {
@@ -140,6 +141,19 @@ function warnIfSkillMissing(state, cfg) {
   );
 }
 
+/**
+ * Índice de conhecimento achado em disco, mas o MCP dele não subiu na
+ * sessão — o bug medido na issue #1: o `.mcp.json` do repositório alvo aponta
+ * pra um servidor que falha dentro do sandbox, e sem este aviso a iteração
+ * varre arquivo achando que não há índice nenhum.
+ */
+function warnIfIndexMcpFailed(state, cfg, root) {
+  const detected = detectKnowledgeIndex(root, cfg);
+  const message = describeMcpFailure(detected, state.mcpServers);
+  if (!message) return;
+  process.stdout.write(paint(C.yellow, `\n  ! ${message}\n`));
+}
+
 function logFile(root, iteration) {
   const dir = path.join(ralphDir(root), "logs");
   mkdirSync(dir, { recursive: true });
@@ -173,6 +187,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   const state = renderer.end();
 
   warnIfSkillMissing(state, cfg);
+  warnIfIndexMcpFailed(state, cfg, root);
 
   if (code !== 0 && !state.finalResult) {
     process.stderr.write(paint(C.red, `\n  claude saiu com código ${code}\n`));

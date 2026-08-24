@@ -202,6 +202,30 @@ export function needsOllamaProbe(detected) {
 }
 
 /**
+ * Aviso de iteração quando o índice foi achado em disco mas o servidor MCP
+ * dele não subiu na sessão — o sintoma medido na issue #1: o `.mcp.json` do
+ * repositório alvo aponta para um servidor que falha dentro do sandbox
+ * (binário ausente, `localhost` resolvendo pro próprio container) e a
+ * iteração varre arquivo sem que ninguém saiba por quê. Casa o nome do
+ * servidor no evento `init` com o `id` do backend detectado — a mesma
+ * convenção que `render` usa em `mcpServers[b.id]`.
+ *
+ * `mcpServers` que não é array (sessão sem o campo, ou repositório sem
+ * índice) devolve `null` — silêncio, não suposição.
+ */
+export function describeMcpFailure(detected, mcpServers) {
+  if (!detected.length || !Array.isArray(mcpServers)) return null;
+  const failed = detected.filter((b) =>
+    mcpServers.some((s) => s.name === b.id && s.status !== "connected")
+  );
+  if (!failed.length) return null;
+  return (
+    `MCP do índice de conhecimento não subiu na sessão: ${failed.map((b) => b.label).join(", ")}. ` +
+    "Esta iteração vai varrer arquivo em vez de consultar o índice."
+  );
+}
+
+/**
  * Linha de aviso amarela para o `doctor` quando a busca semântica degradou —
  * `null` quando não há `code-review-graph` detectado ou quando o Ollama
  * respondeu. Erro de usuário diz o comando que conserta (CLAUDE.md).

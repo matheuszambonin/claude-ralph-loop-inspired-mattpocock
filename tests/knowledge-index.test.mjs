@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { detect, render, describe, describeDegradation } from "../src/knowledge-index.mjs";
+import { detect, render, describe, describeDegradation, describeMcpFailure } from "../src/knowledge-index.mjs";
 
 function tmpRepo(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "ralph-knowledge-index-"));
@@ -142,4 +142,29 @@ test("describe: descreve cada backend detectado", () => {
   assert.equal(lines.length, 1);
   assert.match(lines[0], /graphify/);
   assert.match(lines[0], /\/repo\/graphify-out\/graph\.json/);
+});
+
+test("describeMcpFailure: repositório sem índice devolve null mesmo com servidor falho", () => {
+  assert.equal(describeMcpFailure([], [{ name: "code-review-graph", status: "failed" }]), null);
+});
+
+test("describeMcpFailure: índice detectado mas sessão sem mcp_servers (campo ausente) devolve null", () => {
+  assert.equal(describeMcpFailure(withCodeReviewGraphDetected(), null), null);
+  assert.equal(describeMcpFailure(withCodeReviewGraphDetected(), undefined), null);
+});
+
+test("describeMcpFailure: nenhum servidor da sessão casa com o id do backend detectado devolve null", () => {
+  const line = describeMcpFailure(withCodeReviewGraphDetected(), [{ name: "outro-servidor", status: "failed" }]);
+  assert.equal(line, null);
+});
+
+test("describeMcpFailure: servidor casado e conectado devolve null", () => {
+  const line = describeMcpFailure(withCodeReviewGraphDetected(), [{ name: "code-review-graph", status: "connected" }]);
+  assert.equal(line, null);
+});
+
+test("describeMcpFailure: servidor casado e falho devolve aviso com a consequência em palavras", () => {
+  const line = describeMcpFailure(withCodeReviewGraphDetected(), [{ name: "code-review-graph", status: "failed" }]);
+  assert.match(line, /code-review-graph/);
+  assert.match(line, /varrer arquivo/);
 });
