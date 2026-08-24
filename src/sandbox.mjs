@@ -48,13 +48,26 @@ export async function sandboxExists(name) {
  * dentro — sem isso o sandbox é um Claude Code pelado.
  */
 export function mountsFor(root, cfg) {
-  const mounts = [toMountArg(root)];
+  // O primeiro workspace vence: rodar o Ralph sobre o próprio Ralph faria o
+  // repo entrar como rw e a raiz de instalação como :ro, e o docker recusa o
+  // mesmo workspace com permissões opostas ("conflicting read-only settings").
+  const seen = new Set();
+  const mounts = [];
+  const add = (hostPath, readOnly = false) => {
+    const key = path.resolve(hostPath);
+    const id = process.platform === "win32" ? key.toLowerCase() : key;
+    if (seen.has(id)) return;
+    seen.add(id);
+    mounts.push(toMountArg(hostPath, readOnly));
+  };
+
+  add(root);
   const plugins = userPluginsDir();
-  if (plugins) mounts.push(toMountArg(plugins, true));
-  mounts.push(toMountArg(ralphHome(), true));
+  if (plugins) add(plugins, true);
+  add(ralphHome(), true);
   for (const extra of cfg.extraMounts ?? []) {
     const ro = extra.endsWith(":ro");
-    mounts.push(toMountArg(ro ? extra.slice(0, -3) : extra, ro));
+    add(ro ? extra.slice(0, -3) : extra, ro);
   }
   return mounts;
 }
