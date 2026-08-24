@@ -1,0 +1,10 @@
+# Estes arquivos rodam dentro do container Linux. Com CRLF o shell quebra em
+# "bad interpreter: /usr/bin/env bash^M", então force LF mesmo em clone Windows.
+*.sh        text eol=lf
+bin/ralph   text eol=lf
+
+*.mjs       text
+*.md        text
+*.json      text
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf

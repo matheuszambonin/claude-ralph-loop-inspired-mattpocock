@@ -1,0 +1,11 @@
+# Estado de execução do próprio Ralph, quando ele roda sobre si mesmo
+.ralph/logs/
+.ralph/PROGRESS.md
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Sistema
+.DS_Store
+Thumbs.db
