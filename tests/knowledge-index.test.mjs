@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { detect, render, describe } from "../src/knowledge-index.mjs";
+import { detect, render, describe, describeDegradation } from "../src/knowledge-index.mjs";
 
 function tmpRepo(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "ralph-knowledge-index-"));
@@ -88,6 +88,48 @@ test("render: item detectado sem mcpServer (ex.: graphify, hoje todo backend) n�
   const detected = [{ id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() }];
   const { mcpConfig } = render(detected, null);
   assert.equal(mcpConfig, null);
+});
+
+function withCodeReviewGraphDetected() {
+  return [{ id: "code-review-graph", label: "code-review-graph", path: "/repo/.code-review-graph/graph.db", updatedAt: new Date() }];
+}
+
+test("render: sem sonda (probe null), a tool de busca semântica fica fora e as outras nove entram", () => {
+  const { tools } = render(withCodeReviewGraphDetected(), null);
+  assert.equal(tools.length, 9);
+  assert.ok(!tools.includes("semantic_search_nodes_tool"));
+});
+
+test("render: sonda sem Ollama alcançável, a tool de busca semântica fica fora e as outras nove entram", () => {
+  const { tools } = render(withCodeReviewGraphDetected(), { ollamaReachable: false });
+  assert.equal(tools.length, 9);
+  assert.ok(!tools.includes("semantic_search_nodes_tool"));
+});
+
+test("render: sonda com Ollama alcançável, as dez tools entram", () => {
+  const { tools } = render(withCodeReviewGraphDetected(), { ollamaReachable: true });
+  assert.equal(tools.length, 10);
+  assert.ok(tools.includes("semantic_search_nodes_tool"));
+});
+
+test("render: backend sem tools sondáveis (graphify) não gera nenhuma tool", () => {
+  const detected = [{ id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() }];
+  const { tools } = render(detected, { ollamaReachable: true });
+  assert.deepEqual(tools, []);
+});
+
+test("describeDegradation: sem code-review-graph detectado devolve null", () => {
+  assert.equal(describeDegradation([], { ollamaReachable: false }), null);
+});
+
+test("describeDegradation: Ollama alcançável devolve null", () => {
+  assert.equal(describeDegradation(withCodeReviewGraphDetected(), { ollamaReachable: true }), null);
+});
+
+test("describeDegradation: Ollama inalcançável devolve a linha de aviso com o comando que resolve", () => {
+  const line = describeDegradation(withCodeReviewGraphDetected(), { ollamaReachable: false });
+  assert.match(line, /busca semântica/);
+  assert.match(line, /OLLAMA_HOST=0\.0\.0\.0/);
 });
 
 test("describe: repositório sem índice devolve lista vazia", () => {

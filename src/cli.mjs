@@ -16,7 +16,13 @@ import {
 } from "./sandbox.mjs";
 import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, isLoggedIn } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
-import { detect as detectKnowledgeIndex, describe as describeKnowledgeIndex } from "./knowledge-index.mjs";
+import {
+  detect as detectKnowledgeIndex,
+  describe as describeKnowledgeIndex,
+  describeDegradation as describeKnowledgeIndexDegradation,
+  needsOllamaProbe,
+  probe as probeKnowledgeIndex,
+} from "./knowledge-index.mjs";
 
 const root = repoRoot();
 
@@ -163,7 +169,8 @@ async function cmdDoctor() {
 
   // Sem índice, nenhuma linha entra aqui — é essa ausência que garante que um
   // repositório sem índice de conhecimento produz a mesma saída de sempre.
-  for (const line of describeKnowledgeIndex(detectKnowledgeIndex(root, cfg))) ok(line);
+  const detectedIndexes = detectKnowledgeIndex(root, cfg);
+  for (const line of describeKnowledgeIndex(detectedIndexes)) ok(line);
 
   if (!(await dockerAvailable())) return bad("docker sandbox indisponível — Docker Desktop está rodando?");
   ok("docker sandbox disponível");
@@ -174,6 +181,14 @@ async function cmdDoctor() {
     return;
   }
   ok(`sandbox '${cfg.sandboxName}' existe`);
+
+  // A sonda de Ollama só faz sentido com sandbox de pé — sem isso não há onde
+  // rodar o teste de TCP. Repositório sem code-review-graph nunca chega aqui.
+  if (needsOllamaProbe(detectedIndexes)) {
+    const probed = await probeKnowledgeIndex(cfg.sandboxName);
+    const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
+    degradation ? warn(degradation) : ok("busca semântica do code-review-graph disponível (Ollama alcançável)");
+  }
 
   const stamped = await execCapture(cfg.sandboxName, ["test", "-f", "/home/agent/.claude/.ralph-bootstrap"]);
   stamped.code === 0 ? ok("bootstrap aplicado") : warn("bootstrap ainda não rodou");
