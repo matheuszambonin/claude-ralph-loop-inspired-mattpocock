@@ -49,6 +49,16 @@ test("createStreamRenderer: result sem modelUsage deixa o estado no valor neutro
 test("createStreamRenderer: soma subagent_tokens do <usage> devolvido pelo Agent tool", () => {
   const renderer = createStreamRenderer();
   feed(renderer, {
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "toolu_1", name: "Agent", input: { description: "revisa o diff" } },
+        { type: "tool_use", id: "toolu_2", name: "Agent", input: { description: "confere a spec" } },
+      ],
+    },
+  });
+  feed(renderer, {
     type: "user",
     message: {
       role: "user",
@@ -116,4 +126,25 @@ test("formatCostByModel: dois modelos produzem a linha com os dois", () => {
 
 test("formatCostByModel: custo não reportado usa o fallback", () => {
   assert.equal(formatCostByModel(0, {}, "custo não reportado"), "custo não reportado");
+});
+
+test("createStreamRenderer: subagent_tokens na saída de um Bash não entra na conta", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_bash", name: "Bash", input: { command: "grep subagent_tokens .ralph/logs/*.jsonl" } }] },
+  });
+  feed(renderer, {
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_bash", content: [{ type: "text", text: "iter-03.jsonl: subagent_tokens: 99999" }] }] },
+  });
+  const state = renderer.end();
+  assert.equal(state.subagentTokens, 0);
+});
+
+test("formatCostByModel: sem custo total, a quebra por modelo vira o total", () => {
+  const line = formatCostByModel(0, { "claude-sonnet-4-5": 1.2, "claude-haiku-4-5": 0.08 });
+  assert.match(line, /\$1\.2800/);
+  assert.match(line, /sonnet \$1\.2000/);
+  assert.match(line, /haiku \$0\.0800/);
 });

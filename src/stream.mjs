@@ -66,6 +66,11 @@ export function createStreamRenderer({ onEvent } = {}) {
     subagentTokens: 0,
   };
 
+  // Ids dos `tool_use` do Agent tool. Sem isto, qualquer `tool_result` que
+  // por acaso contenha o texto `subagent_tokens:` — a saída de um grep sobre
+  // os próprios logs do Ralph, por exemplo — entrava na conta.
+  const subagentCalls = new Set();
+
   function handle(evt) {
     onEvent?.(evt);
     switch (evt.type) {
@@ -88,6 +93,7 @@ export function createStreamRenderer({ onEvent } = {}) {
             state.text += block.text;
             process.stdout.write(block.text.replace(/\n/g, "\n") + "\n\n");
           } else if (block.type === "tool_use") {
+            if (block.name === "Agent" || block.name === "Task") subagentCalls.add(block.id);
             const detail = describeTool(block.name, block.input);
             process.stdout.write(
               `${paint(C.cyan, "⚙")} ${paint(C.bold, block.name)}${detail ? paint(C.dim, "  " + detail) : ""}\n`
@@ -109,8 +115,10 @@ export function createStreamRenderer({ onEvent } = {}) {
           if (block.is_error) {
             process.stdout.write(paint(C.red, `  ✗ ${body.split("\n")[0].slice(0, 160)}\n`));
           }
-          const tokens = parseSubagentTokens(body);
-          if (tokens !== null) state.subagentTokens += tokens;
+          if (subagentCalls.has(block.tool_use_id)) {
+            const tokens = parseSubagentTokens(body);
+            if (tokens !== null) state.subagentTokens += tokens;
+          }
         }
         break;
       }
@@ -206,9 +214,13 @@ export function accumulateModelUsage(totals, modelUsage) {
  * ou `$X (modelo $Y · modelo $Z)` com mais de um. Pura.
  */
 export function formatCostByModel(totalCost, modelTotals, fallback = "—") {
-  if (!totalCost) return fallback;
-  const cost = `$${totalCost.toFixed(4)}`;
   const models = Object.keys(modelTotals ?? {});
+  // `result` pode trazer `modelUsage` e não trazer `total_cost_usd`. Jogar a
+  // quebra fora nesse caso é o desperdício que a issue #9 veio consertar:
+  // o dado chegou, então a soma dele é o total.
+  const total = totalCost || models.reduce((acc, m) => acc + modelTotals[m], 0);
+  if (!total) return fallback;
+  const cost = `$${total.toFixed(4)}`;
   if (models.length <= 1) return cost;
   const breakdown = models.map((m) => `${shortModelName(m)} $${modelTotals[m].toFixed(4)}`).join(" · ");
   return `${cost} (${breakdown})`;
