@@ -27,8 +27,9 @@ bash -n sandbox/bootstrap.sh templates/setup.sh bin/ralph
 node --test tests/*.test.mjs
 ```
 
-Isso pega erro de sintaxe e o que `tests/` cobre — que hoje é só a costura
-pura de `src/knowledge-index.mjs`. Mudança em `sandbox/bootstrap.sh` ou em
+Isso pega erro de sintaxe e o que `tests/` cobre — as costuras puras:
+`knowledge-index`, `credentials`, `orientation`, a montagem do prompt em
+`runner` e a agregação de custo em `stream`. Mudança em `sandbox/bootstrap.sh` ou em
 `src/sandbox.mjs` só está provada quando `ralph bootstrap --force` roda limpo
 num sandbox de verdade e `ralph doctor` fecha verde num repo alvo — o
 comportamento que importa está do lado de dentro do container.
