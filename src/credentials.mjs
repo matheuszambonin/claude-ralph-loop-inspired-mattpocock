@@ -88,3 +88,20 @@ function ago(ms, prefix = "há ") {
   if (hours < 48) return `${prefix}${hours}h`;
   return `${prefix}${Math.round(hours / 24)}d`;
 }
+
+/**
+ * O conselho a imprimir quando a sessão morreu com `authentication_failed`.
+ * Delega ao veredito porque é ele que sabe distinguir refresh morto (só
+ * `ralph login` resolve) de cópia velha (recopiar do host basta).
+ */
+export function authFailureAdvice(v) {
+  if (!v.ok) return v.message;
+  // Os dois timestamps no futuro e a API recusando mesmo assim é o refresh
+  // rotacionado pelo host (issue #8): o arquivo parece saudável e não está,
+  // então nenhuma leitura de expiração pega este caso — só a recusa pega.
+  return (
+    "a credencial de lá dentro não vale mais, embora ainda não tenha vencido — " +
+    "o host rotacionou o refresh.\n" +
+    "  Rode 'ralph login --share-credentials' para recopiar o token do host."
+  );
+}

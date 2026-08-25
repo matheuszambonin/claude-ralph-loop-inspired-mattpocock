@@ -11,7 +11,7 @@ import {
 } from "./sandbox.mjs";
 import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
-import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure } from "./credentials.mjs";
+import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
 import { detect as detectKnowledgeIndex, describeMcpFailure } from "./knowledge-index.mjs";
 import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
@@ -179,11 +179,15 @@ function warnIfIndexMcpFailed(state, cfg, root) {
  * iteração custa 1 segundo e o usuário vê só "iteração falhou" apontando
  * para um JSONL de 5 KB — o comando que conserta fica escondido lá dentro.
  */
-function warnIfAuthFailed(state, cfg) {
+async function warnIfAuthFailed(state, cfg) {
   if (!isAuthFailure(state)) return;
+  // Relê a credencial em vez de chutar o comando: refresh morto só sai com
+  // `ralph login`, e mandar `--share-credentials` ali faz o usuário recopiar
+  // um token que já nasce recusado.
+  const advice = authFailureAdvice(await checkAuth(cfg.sandboxName));
   process.stdout.write(
     paint(C.red, `\n  ! o claude do sandbox '${cfg.sandboxName}' não conseguiu autenticar.\n`) +
-      paint(C.dim, `    A credencial de lá dentro venceu. Rode 'ralph login --share-credentials'.\n`)
+      paint(C.dim, `    ${advice.replace(/\n\s*/g, "\n    ")}\n`)
   );
 }
 
@@ -232,7 +236,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
 
   warnIfSkillMissing(state, cfg);
   warnIfIndexMcpFailed(state, cfg, root);
-  warnIfAuthFailed(state, cfg);
+  await warnIfAuthFailed(state, cfg);
 
   if (code !== 0 && !state.finalResult) {
     process.stderr.write(paint(C.red, `\n  claude saiu com código ${code}\n`));

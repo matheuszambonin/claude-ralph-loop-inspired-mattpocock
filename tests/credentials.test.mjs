@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parse, verdict, isAuthFailure } from "../src/credentials.mjs";
+import { parse, verdict, isAuthFailure, authFailureAdvice } from "../src/credentials.mjs";
 
 const HOUR = 3600_000;
 const NOW = 1_787_000_000_000;
@@ -87,4 +87,17 @@ test("isAuthFailure: reconhece o resultado que matou a iteração", () => {
 test("isAuthFailure: iteração normal não dispara", () => {
   assert.equal(isAuthFailure({ finalResult: "COMPLETE — backlog vazio" }), false);
   assert.equal(isAuthFailure({}), false);
+});
+
+test("authFailureAdvice: refresh vencido manda relogar, não recopiar", () => {
+  const sandbox = parse(creds({ refreshTokenExpiresAt: NOW - HOUR }));
+  const advice = authFailureAdvice(verdict({ sandbox, host: parse(creds()), now: NOW }));
+  assert.match(advice, /ralph login'/);
+  assert.doesNotMatch(advice, /--share-credentials/);
+});
+
+test("authFailureAdvice: credencial que parece saudável não anuncia 'autenticado'", () => {
+  const advice = authFailureAdvice(verdict({ sandbox: parse(creds()), now: NOW }));
+  assert.match(advice, /--share-credentials/);
+  assert.doesNotMatch(advice, /autenticado/);
 });
