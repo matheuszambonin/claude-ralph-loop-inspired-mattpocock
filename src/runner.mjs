@@ -13,32 +13,36 @@ import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModel
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
-import { detect as detectKnowledgeIndex, render as renderKnowledgeIndex, describeMcpFailure } from "./knowledge-index.mjs";
+import { detect as detectKnowledgeIndex, describeMcpFailure } from "./knowledge-index.mjs";
+import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
+
+function feedbackLoopsBlock(cfg) {
+  return (cfg.feedbackLoops ?? []).length
+    ? cfg.feedbackLoops.map((cmd, i) => `${i + 1}. \`${cmd}\` — must pass`).join("\n")
+    : "1. Discover this repo's checks (package.json scripts, Makefile, CI config) and run every one that applies.";
+}
+
+/** Pura: template do prompt de iteração entra, prompt resolvido sai. Sem fs, sem Docker. */
+export function renderPrompt(template, cfg) {
+  return template
+    .replaceAll("{{PROGRESS_FILE}}", cfg.progressFile)
+    .replaceAll("{{COMPLETION_PROMISE}}", cfg.completionPromise)
+    .replaceAll("{{BLOCKED_PROMISE}}", cfg.blockedPromise ?? "BLOCKED")
+    .replaceAll("{{FEEDBACK_LOOPS}}", feedbackLoopsBlock(cfg));
+}
 
 /**
- * Lê o prompt do repo e resolve os placeholders.
- *
- * `{{KNOWLEDGE_INDEX_BLOCK}}` some junto com a própria quebra de linha que o
- * segue no template (`.replaceAll` com o `\n` no padrão de busca) — é o que
- * garante que repositório sem índice produz um prompt byte a byte igual ao
- * de antes desta issue, sem linha em branco sobrando no lugar do bloco.
+ * Lê o prompt do repo e resolve os placeholders. Desde a issue #10 a
+ * Orientação (e o bloco do índice de conhecimento que ela consulta) mora no
+ * prompt do subagente, não aqui — este prompt não tem mais o que resolver
+ * além do que `renderPrompt` já cobre.
  */
 export function buildPrompt(root, cfg) {
   const file = path.join(root, cfg.promptFile);
   if (!existsSync(file)) {
     throw new Error(`prompt não encontrado: ${cfg.promptFile} — rode 'ralph init' neste repo`);
   }
-  const loops = (cfg.feedbackLoops ?? []).length
-    ? cfg.feedbackLoops.map((cmd, i) => `${i + 1}. \`${cmd}\` — must pass`).join("\n")
-    : "1. Discover this repo's checks (package.json scripts, Makefile, CI config) and run every one that applies.";
-  const { promptBlock } = renderKnowledgeIndex(detectKnowledgeIndex(root, cfg), null);
-
-  return readFileSync(file, "utf8")
-    .replaceAll("{{PROGRESS_FILE}}", cfg.progressFile)
-    .replaceAll("{{COMPLETION_PROMISE}}", cfg.completionPromise)
-    .replaceAll("{{BLOCKED_PROMISE}}", cfg.blockedPromise ?? "BLOCKED")
-    .replaceAll("{{FEEDBACK_LOOPS}}", loops)
-    .replaceAll("{{KNOWLEDGE_INDEX_BLOCK}}\n", promptBlock);
+  return renderPrompt(readFileSync(file, "utf8"), cfg);
 }
 
 function git(root, args) {
@@ -206,11 +210,22 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     `\n${paint(C.magenta, "━".repeat(8))} ${paint(C.bold, header)} ${paint(C.dim, new Date().toLocaleTimeString())} ${paint(C.magenta, "━".repeat(8))}\n`
   );
 
+  // `--agents` por último: o prompt da iteração depende do subagente
+  // "orientation" existir (passo 1 delega nele), então a nossa definição
+  // precisa vencer se quem chamou `ralph` também passar `--agents` cru via
+  // `-- --agents ...` — a última ocorrência de uma flag não-variádica é a
+  // que o CLI do claude usa.
+  //
+  // Refeito a cada iteração (não junto de `prompt`, que `runLoop` monta uma
+  // vez só): o índice de conhecimento do repo alvo pode aparecer entre
+  // iterações (ex.: outra ferramenta rodando em paralelo o gera), e o custo
+  // de refazer é um `readFileSync` e um `readdirSync` — não vale cachear.
+  const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), cfg);
   const { code, stderr } = await runClaudeStreaming(cfg.sandboxName, {
     workdir,
     prompt,
     model: cfg.model,
-    extraArgs,
+    extraArgs: [...extraArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
   const state = renderer.end();

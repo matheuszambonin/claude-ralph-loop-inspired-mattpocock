@@ -6,6 +6,11 @@ export const DEFAULTS = {
   /** Modelo de cada iteração. Sonnet é o padrão: Ralph vive de muitas
    *  iterações baratas com contexto pequeno, não de poucas caras. */
   model: "sonnet",
+  /** Modelo do subagente de Orientação. Campo plano, não aninhado, para que
+   *  um config.json existente continue válido sem migração (ADR-0004). Haiku
+   *  é o padrão porque a Orientação só precisa ler e relatar, nunca implementar
+   *  — se a janela de 200K degradar num repo grande, troca-se para "sonnet". */
+  scoutModel: "haiku",
   /** Teto de iterações do `ralph afk` quando -n não é passado. */
   maxIterations: 20,
   /** String que o agente emite dentro de <promise>…</promise> para encerrar. */

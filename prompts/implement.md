@@ -4,38 +4,35 @@ You are ONE iteration of a Ralph loop. Your context window is fresh and it dies
 when you exit. Anything the next iteration needs to know must be on disk before
 you finish. Work on exactly ONE ticket, then stop.
 
-## 1. Orient — cheaply
+## 1. Orient — delegate it
 
-Read only these, in this order:
+Use the Agent tool with `subagent_type: "orientation"` to figure out which
+ticket to work on. It reads the issue tracker, `{{PROGRESS_FILE}}`,
+`CLAUDE.md`/`AGENTS.md`/`CONTEXT.md`, the ADRs, and the knowledge index (if
+any), and reports back in this shape:
 
-1. `docs/agents/issue-tracker.md` — where this repo's tickets live and how to
-   read, claim and close them. If the file is missing, STOP and emit
-   `<promise>{{BLOCKED_PROMISE}}</promise>` asking the human to run
-   `/mattpocock-skills:setup-matt-pocock-skills`.
-2. `docs/agents/triage-labels.md` — the label strings for the triage roles, if present.
-3. `{{PROGRESS_FILE}}` — the last few entries. This is a previous iteration
-   talking to you: trust it and skip the exploration it already did.
-4. `CLAUDE.md` / `AGENTS.md`, `CONTEXT.md` and any ADRs under `docs/adr/`
-   touching the area you are about to change.
+```
+STATUS: ready | complete | blocked
+TICKET: ...
+WHY: ...
+CONTEXT: ...
+```
 
-{{KNOWLEDGE_INDEX_BLOCK}}
-Do NOT survey the whole codebase. Read what the ticket needs and no more —
-every token you spend orienting is a token you don't have for the work.
+Trust its `CONTEXT` instead of re-reading what it already read — every token
+you spend re-deriving what it found is a token you don't have for the ticket.
 
-## 2. Pick exactly ONE ticket
+If the report doesn't come back in that shape, or `CONTEXT` is empty, treat it
+as blocked: emit `<promise>{{BLOCKED_PROMISE}}</promise>` saying the
+orientation report was malformed, and stop. Do not run orientation again
+yourself.
 
-From the issue tracker, take the first ticket on the **frontier**: state
-`ready-for-agent`, every blocking ticket already closed, not claimed by another
-iteration. Prefer risky work — architecture, integration points, unknowns —
-over polish.
+## 2. Act on the report
 
-Claim it before you touch any code, so a parallel iteration doesn't take it too.
-
-If the frontier is empty because everything is done, emit
-`<promise>{{COMPLETION_PROMISE}}</promise>` and stop.
-If it is empty only because everything left is blocked, needs a human, or needs
-information you don't have, emit `<promise>{{BLOCKED_PROMISE}}</promise>`,
-say why in one paragraph, and stop.
+- `STATUS: complete` — emit `<promise>{{COMPLETION_PROMISE}}</promise>` and stop.
+- `STATUS: blocked` — emit `<promise>{{BLOCKED_PROMISE}}</promise>`, say why in
+  one paragraph (from `WHY`), and stop.
+- `STATUS: ready` — claim `TICKET` before you touch any code, following
+  `docs/agents/issue-tracker.md`, so a parallel iteration doesn't take it too.
 
 ## 3. Implement it
 
