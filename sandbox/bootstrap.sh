@@ -11,6 +11,7 @@
 #   RALPH_GIT_NAME     git user.name a configurar
 #   RALPH_GIT_EMAIL    git user.email a configurar
 #   RALPH_GIT_AUTOCRLF core.autocrlf efetivo no host, espelhado aqui
+#   RALPH_REPO_PATH    caminho (no container) do repositório alvo montado
 set -euo pipefail
 
 CLAUDE_DIR="$HOME/.claude"
@@ -97,6 +98,19 @@ git config --global --add safe.directory '*'
 if [ -n "${RALPH_GIT_AUTOCRLF:-}" ]; then
   git config --global core.autocrlf "$RALPH_GIT_AUTOCRLF"
   echo "· core.autocrlf=$RALPH_GIT_AUTOCRLF (espelhado do host)"
+fi
+
+# ------------------------------------------------------ hooks do alvo ----
+# O post-commit do repositório alvo mora dentro do workspace montado. Sem
+# neutralizar, ele roda aqui dentro quando o agente commita e regravaria o
+# índice de conhecimento do host com caminho de container — corrompendo o
+# banco que a sessão do host usa (ADR-0002). `core.hooksPath` apontado pra
+# uma pasta vazia vence sem apagar nada do `.git/hooks` do repositório.
+if [ -n "${RALPH_REPO_PATH:-}" ] && [ -d "$RALPH_REPO_PATH/.git" ]; then
+  EMPTY_HOOKS="$CLAUDE_DIR/.ralph-empty-hooks"
+  mkdir -p "$EMPTY_HOOKS"
+  git config -C "$RALPH_REPO_PATH" core.hooksPath "$EMPTY_HOOKS"
+  echo "· hooks do repositório alvo neutralizados (core.hooksPath=$EMPTY_HOOKS)"
 fi
 
 # ------------------------------------------------------------------ stamp ----

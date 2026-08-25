@@ -13,7 +13,13 @@ import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModel
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
-import { detect as detectKnowledgeIndex, describeMcpFailure } from "./knowledge-index.mjs";
+import {
+  detect as detectKnowledgeIndex,
+  render as renderKnowledgeIndex,
+  probe as probeKnowledgeIndex,
+  needsOllamaProbe,
+  describeMcpFailure,
+} from "./knowledge-index.mjs";
 import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
 
 function feedbackLoopsBlock(cfg) {
@@ -85,6 +91,9 @@ export async function ensureBootstrap(name, root, { force = false } = {}) {
     // no Windows aparece com todos os arquivos "modificados" só por CRLF, e o
     // agente commita milhares de linhas de ruído.
     `RALPH_GIT_AUTOCRLF=${gitConfigValue(root, "core.autocrlf")}`,
+    // Bootstrap neutraliza os hooks do repositório alvo aqui dentro
+    // (ADR-0002) — precisa do caminho de container, não do host.
+    `RALPH_REPO_PATH=${inContainer(root)}`,
   ];
   const res = await execCapture(name, ["env", ...env, "bash", bootstrapScriptPath()]);
   process.stdout.write(res.stdout.replace(/^/gm, "  "));
@@ -167,8 +176,7 @@ function warnIfSkillMissing(state, cfg) {
  * pra um servidor que falha dentro do sandbox, e sem este aviso a iteração
  * varre arquivo achando que não há índice nenhum.
  */
-function warnIfIndexMcpFailed(state, cfg, root) {
-  const detected = detectKnowledgeIndex(root, cfg);
+function warnIfIndexMcpFailed(state, detected) {
   const message = describeMcpFailure(detected, state.mcpServers);
   if (!message) return;
   process.stdout.write(paint(C.yellow, `\n  ! ${message}\n`));
@@ -214,6 +222,19 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     `\n${paint(C.magenta, "━".repeat(8))} ${paint(C.bold, header)} ${paint(C.dim, new Date().toLocaleTimeString())} ${paint(C.magenta, "━".repeat(8))}\n`
   );
 
+  // MCP efêmero (issue #7, ADR-0002): `--strict-mcp-config` sempre — o
+  // `.mcp.json` do repositório alvo é curado pra sessão de host e nunca deve
+  // ser lido dentro do sandbox, com ou sem índice detectado. `--mcp-config`
+  // só entra quando há backend que sobe servidor (hoje só code-review-graph);
+  // sem ele, `--strict-mcp-config` sozinho já deixa a sessão sem MCP nenhum.
+  const detected = detectKnowledgeIndex(root, cfg);
+  const probeResult = needsOllamaProbe(detected) ? await probeKnowledgeIndex(cfg.sandboxName) : null;
+  const { mcpConfig, tools } = renderKnowledgeIndex(detected, probeResult, {
+    containerRoot: workdir,
+    embeddingEnv: cfg.crgEmbeddingEnv,
+  });
+  const mcpArgs = mcpConfig ? ["--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config"] : ["--strict-mcp-config"];
+
   // `--agents` por último: o prompt da iteração depende do subagente
   // "orientation" existir (passo 1 delega nele), então a nossa definição
   // precisa vencer se quem chamou `ralph` também passar `--agents` cru via
@@ -224,18 +245,18 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   // vez só): o índice de conhecimento do repo alvo pode aparecer entre
   // iterações (ex.: outra ferramenta rodando em paralelo o gera), e o custo
   // de refazer é um `readFileSync` e um `readdirSync` — não vale cachear.
-  const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), cfg);
+  const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), cfg, tools);
   const { code, stderr } = await runClaudeStreaming(cfg.sandboxName, {
     workdir,
     prompt,
     model: cfg.model,
-    extraArgs: [...extraArgs, "--agents", JSON.stringify(agents)],
+    extraArgs: [...extraArgs, ...mcpArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
   const state = renderer.end();
 
   warnIfSkillMissing(state, cfg);
-  warnIfIndexMcpFailed(state, cfg, root);
+  warnIfIndexMcpFailed(state, detected);
   await warnIfAuthFailed(state, cfg);
 
   if (code !== 0 && !state.finalResult) {

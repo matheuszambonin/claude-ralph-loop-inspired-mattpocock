@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { ralphHome } from "./paths.mjs";
-import { detect as detectKnowledgeIndex, render as renderKnowledgeIndex } from "./knowledge-index.mjs";
+import { detect as detectKnowledgeIndex, render as renderKnowledgeIndex, CRG_ID } from "./knowledge-index.mjs";
 
 const AGENT_NAME = "orientation";
 
@@ -42,14 +42,19 @@ export function buildOrientationPrompt(root, cfg) {
  * costura que a issue #10 pediu para o `--agents` da invocação: modelo vem do
  * config (`orientationModel`, default "haiku" — ver DEFAULTS em config.mjs) e a
  * whitelist é a garantia, testável aqui, de que quem orienta não escreve.
+ *
+ * `indexTools` são os nomes curtos que `render()` já filtrou pela sonda de
+ * Ollama (issue #7) — nenhuma tool que a sonda derrubou chega aqui. Entram
+ * qualificados como `mcp__<server>__<tool>`, a convenção que o `tools:` de um
+ * subagente do Claude Code exige para tool de MCP.
  */
-export function buildOrientationAgent(promptText, cfg) {
+export function buildOrientationAgent(promptText, cfg, indexTools = []) {
   return {
     [AGENT_NAME]: {
       description:
         "Reads the issue tracker, PROGRESS.md and the project's docs to pick the next ticket for this iteration, without writing anything.",
       prompt: promptText,
-      tools: TOOL_WHITELIST,
+      tools: [...TOOL_WHITELIST, ...indexTools.map((t) => `mcp__${CRG_ID}__${t}`)],
       model: cfg.orientationModel ?? "haiku",
     },
   };

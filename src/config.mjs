@@ -26,6 +26,12 @@ export const DEFAULTS = {
   extraMounts: [],
   /** Branches em que o Ralph pode rodar sem --allow-branch. */
   protectedBranches: ["main", "master"],
+  /** Env extra pro servidor MCP efêmero do code-review-graph — hoje só serve
+   *  pro provedor de embeddings (`CRG_OPENAI_API_KEY`/`_BASE_URL`/`_MODEL`,
+   *  ver knowledge-index.mjs). Chave e modelo são segredo do operador, não
+   *  algo que o Ralph descubra sozinho; endereço de loopback em
+   *  `CRG_OPENAI_BASE_URL` é traduzido pro host do Docker automaticamente. */
+  crgEmbeddingEnv: {},
   /** Segundos de espera entre iterações do AFK. */
   cooldownSeconds: 0,
 };

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { detect, render, describe, describeDegradation, describeMcpFailure, withInstallBlock } from "../src/knowledge-index.mjs";
+import { detect, render, describe, describeDegradation, describeMcpFailure, withInstallBlock, CRG_ID } from "../src/knowledge-index.mjs";
 
 function tmpRepo(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "ralph-knowledge-index-"));
@@ -75,19 +75,62 @@ test("render: sem backend devolve bloco de prompt vazio e nenhuma configuração
   assert.deepEqual(render([], null), { promptBlock: "", mcpConfig: null, tools: [] });
 });
 
-test("render: monta mcpConfig a partir do mcpServer de cada item detectado", () => {
-  const detected = [
-    { id: "code-review-graph", label: "code-review-graph", path: "/repo/.code-review-graph/graph.db", updatedAt: new Date(), mcpServer: { command: "uvx", args: ["code-review-graph", "serve"] } },
-  ];
-  const { promptBlock, mcpConfig } = render(detected, null);
-  assert.notEqual(promptBlock, "");
-  assert.deepEqual(mcpConfig, { mcpServers: { "code-review-graph": { command: "uvx", args: ["code-review-graph", "serve"] } } });
+test("render: sem containerRoot, nenhum mcpConfig — não há --repo para montar", () => {
+  const { mcpConfig } = render(withCodeReviewGraphDetected(), { ollamaReachable: true });
+  assert.equal(mcpConfig, null);
 });
 
-test("render: item detectado sem mcpServer (ex.: graphify, hoje todo backend) não gera mcpConfig", () => {
+test("render: com containerRoot, monta o comando `serve` do code-review-graph com --repo e --tools", () => {
+  const { mcpConfig } = render(withCodeReviewGraphDetected(), { ollamaReachable: true }, { containerRoot: "/repo" });
+  assert.deepEqual(mcpConfig.mcpServers[CRG_ID].command, CRG_ID);
+  assert.deepEqual(mcpConfig.mcpServers[CRG_ID].args.slice(0, 3), ["serve", "--repo", "/repo"]);
+  assert.equal(mcpConfig.mcpServers[CRG_ID].args[3], "--tools");
+  assert.match(mcpConfig.mcpServers[CRG_ID].args[4], /semantic_search_nodes_tool/);
+});
+
+test("render: sem Ollama alcançável, --tools sai sem a tool de busca semântica", () => {
+  const { mcpConfig } = render(withCodeReviewGraphDetected(), { ollamaReachable: false }, { containerRoot: "/repo" });
+  assert.doesNotMatch(mcpConfig.mcpServers[CRG_ID].args[4], /semantic_search_nodes_tool/);
+});
+
+test("render: item detectado sem servidor MCP (graphify, consultado em prosa) não gera mcpConfig", () => {
   const detected = [{ id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() }];
-  const { mcpConfig } = render(detected, null);
+  const { mcpConfig } = render(detected, null, { containerRoot: "/repo" });
   assert.equal(mcpConfig, null);
+});
+
+test("render: embeddingEnv passa como está, exceto CRG_OPENAI_BASE_URL de loopback traduzido pro host do Docker", () => {
+  const { mcpConfig } = render(
+    withCodeReviewGraphDetected(),
+    { ollamaReachable: true },
+    {
+      containerRoot: "/repo",
+      embeddingEnv: {
+        CRG_OPENAI_API_KEY: "ollama",
+        CRG_OPENAI_BASE_URL: "http://127.0.0.1:11434/v1",
+        CRG_OPENAI_MODEL: "nomic-embed-text",
+      },
+    }
+  );
+  assert.deepEqual(mcpConfig.mcpServers[CRG_ID].env, {
+    CRG_OPENAI_API_KEY: "ollama",
+    CRG_OPENAI_BASE_URL: "http://host.docker.internal:11434/v1",
+    CRG_OPENAI_MODEL: "nomic-embed-text",
+  });
+});
+
+test("render: embeddingEnv ausente não acrescenta env nenhum ao servidor MCP", () => {
+  const { mcpConfig } = render(withCodeReviewGraphDetected(), { ollamaReachable: true }, { containerRoot: "/repo" });
+  assert.equal(mcpConfig.mcpServers[CRG_ID].env, undefined);
+});
+
+test("render: CRG_OPENAI_BASE_URL já apontado pro host do Docker (ou outro host qualquer) não muda", () => {
+  const { mcpConfig } = render(
+    withCodeReviewGraphDetected(),
+    { ollamaReachable: true },
+    { containerRoot: "/repo", embeddingEnv: { CRG_OPENAI_BASE_URL: "https://api.example.com/v1" } }
+  );
+  assert.equal(mcpConfig.mcpServers[CRG_ID].env.CRG_OPENAI_BASE_URL, "https://api.example.com/v1");
 });
 
 function withCodeReviewGraphDetected() {

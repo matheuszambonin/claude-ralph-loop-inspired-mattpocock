@@ -28,7 +28,7 @@ const CRG_TOOLS = [
   "get_architecture_overview_tool",
 ];
 const CRG_EMBEDDING_TOOL = "semantic_search_nodes_tool";
-const CRG_ID = "code-review-graph";
+export const CRG_ID = "code-review-graph";
 const GRAPHIFY_ID = "graphify";
 
 /**
@@ -54,9 +54,9 @@ const PROMPT_HINTS = {
  * Um backend por assinatura de artefato em disco — mesmo padrão que
  * `detectFeedbackLoops` em cli.mjs já usa para achar scripts do package.json.
  *
- * Nenhum backend declara aqui como sobe seu MCP: o comando real precisa de
- * endereço de host e `--strict-mcp-config` traduzidos pro container (ADR-0002),
- * e essa tradução é trabalho de outra fatia. `detect` só prova presença.
+ * Nenhum backend declara aqui como sobe seu MCP: o comando real precisa do
+ * caminho de container, que só existe na hora da iteração (issue #7),
+ * então `detect` só prova presença — quem monta o comando é `render`.
  */
 const BACKENDS = [
   {
@@ -162,19 +162,62 @@ export async function probe(sandboxName) {
 }
 
 /**
- * A costura: pura, sem Docker, rede ou disco. Recebe detecção e sonda como
- * dado — assinatura fixada aqui porque é a que as fatias seguintes (MCP
- * efêmero, lista de tools sondada) vão estender, sem trocar a forma.
+ * Corrige o host de loopback pro endereço do Docker (ADR-0002), preservando
+ * porta e caminho. Não deriva credencial nenhuma: só traduz o endereço que o
+ * operador já configurou no host (`crgEmbeddingEnv` no config) — de dentro do
+ * sandbox `127.0.0.1`/`localhost`/`0.0.0.0` é o próprio container, nunca o
+ * Ollama do host. URL que não parseia volta como veio, sem lançar.
+ */
+function translateLoopback(url) {
+  try {
+    const u = new URL(url);
+    if (["127.0.0.1", "localhost", "0.0.0.0", "::1"].includes(u.hostname)) u.hostname = dockerHostAddress();
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Comando MCP efêmero do `code-review-graph` (`serve`, documentado no README
+ * upstream) — `--repo` recebe o caminho já traduzido pro container por quem
+ * chama, nunca o do host (ADR-0002), e `--tools` a lista que a sonda de
+ * Ollama já filtrou (ADR-0003). `graphify` não sobe MCP (é lido em prosa),
+ * então devolve `null` para qualquer outro id.
  *
- * Hoje nenhum item de `detected` traz `mcpServer` (ver comentário em
- * `BACKENDS`), então `mcpConfig` sai `null` mesmo com backend achado — monta
- * a partir do campo quando ele existir, não assume comando nenhum.
+ * `embeddingEnv` é o único jeito de ligar a busca semântica de verdade: o
+ * provedor de embeddings do `code-review-graph` (`CRG_OPENAI_API_KEY` +
+ * `CRG_OPENAI_BASE_URL` + `CRG_OPENAI_MODEL`, verificado no código upstream)
+ * são segredo e modelo que só o operador sabe — Ralph não inventa nenhum dos
+ * dois, só traduz o endereço de loopback de `CRG_OPENAI_BASE_URL` quando o
+ * operador declarou um em `crgEmbeddingEnv`.
+ */
+function mcpServerFor(id, containerRoot, tools, embeddingEnv) {
+  if (id !== CRG_ID || !tools.length) return null;
+  const server = { command: CRG_ID, args: ["serve", "--repo", containerRoot, "--tools", tools.join(",")] };
+  const entries = Object.entries(embeddingEnv ?? {});
+  if (entries.length) {
+    server.env = Object.fromEntries(
+      entries.map(([key, value]) => [key, key === "CRG_OPENAI_BASE_URL" ? translateLoopback(value) : value])
+    );
+  }
+  return server;
+}
+
+/**
+ * A costura: pura, sem Docker, rede ou disco. Recebe detecção e sonda como
+ * dado.
+ *
+ * `opts.containerRoot` ausente (chamadas que só querem o bloco de prompt,
+ * como a Orientação) devolve `mcpConfig: null` mesmo com backend achado — sem
+ * o caminho de container não há `--repo` para montar, e um comando com
+ * caminho de host quebraria dentro do sandbox (ADR-0002).
  *
  * `probeResult` ausente (repositório sem sandbox ainda sondado) degrada como
  * se o Ollama estivesse inalcançável — ADR-0003: uma tool ausente é melhor
  * que uma tool que mente, e assumir "alcançável" sem prova seria a mentira.
  */
-export function render(detected, probeResult) {
+export function render(detected, probeResult, opts = {}) {
   if (!detected.length) return { promptBlock: "", mcpConfig: null, tools: [] };
 
   const promptBlock =
@@ -184,18 +227,21 @@ export function render(detected, probeResult) {
       .join("\n") +
     "\n";
 
-  const mcpServers = {};
-  for (const b of detected) {
-    if (b.mcpServer) mcpServers[b.id] = b.mcpServer;
-  }
-  const mcpConfig = Object.keys(mcpServers).length ? { mcpServers } : null;
-
   const ollamaReachable = probeResult?.ollamaReachable ?? false;
   const tools = [];
   for (const b of detected) {
     if (b.id !== CRG_ID) continue;
     tools.push(...(ollamaReachable ? CRG_TOOLS : CRG_TOOLS.filter((t) => t !== CRG_EMBEDDING_TOOL)));
   }
+
+  const mcpServers = {};
+  if (opts.containerRoot) {
+    for (const b of detected) {
+      const server = mcpServerFor(b.id, opts.containerRoot, tools, opts.embeddingEnv);
+      if (server) mcpServers[b.id] = server;
+    }
+  }
+  const mcpConfig = Object.keys(mcpServers).length ? { mcpServers } : null;
 
   return { promptBlock, mcpConfig, tools };
 }

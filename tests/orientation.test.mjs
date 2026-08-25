@@ -53,6 +53,22 @@ test("buildOrientationAgent: carrega o prompt recebido sem alterar", () => {
   assert.equal(agent.orientation.prompt, "prompt de teste");
 });
 
+test("buildOrientationAgent: sem indexTools, a whitelist não ganha nenhuma tool de MCP", () => {
+  const agent = buildOrientationAgent("prompt de teste", {});
+  assert.ok(!agent.orientation.tools.some((t) => t.startsWith("mcp__")));
+});
+
+test("buildOrientationAgent: indexTools entram qualificadas como mcp__<server>__<tool>", () => {
+  const agent = buildOrientationAgent("prompt de teste", {}, ["get_minimal_context_tool", "query_graph_tool"]);
+  assert.ok(agent.orientation.tools.includes("mcp__code-review-graph__get_minimal_context_tool"));
+  assert.ok(agent.orientation.tools.includes("mcp__code-review-graph__query_graph_tool"));
+});
+
+test("buildOrientationAgent: indexTools não substitui a whitelist base — Read/Grep/Glob/Bash continuam", () => {
+  const agent = buildOrientationAgent("prompt de teste", {}, ["get_minimal_context_tool"]);
+  for (const t of ["Read", "Grep", "Glob", "Bash"]) assert.ok(agent.orientation.tools.includes(t));
+});
+
 test("buildOrientationPrompt: repositório com índice de conhecimento — o bloco aparece no prompt do subagente", (t) => {
   const root = tmpRepo(t);
   mkdirSync(path.join(root, ".code-review-graph"), { recursive: true });
