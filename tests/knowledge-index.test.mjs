@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { detect, render, describe, describeDegradation, describeMcpFailure } from "../src/knowledge-index.mjs";
+import { detect, render, describe, describeDegradation, describeMcpFailure, withInstallBlock } from "../src/knowledge-index.mjs";
 
 function tmpRepo(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "ralph-knowledge-index-"));
@@ -187,4 +187,49 @@ test("describeMcpFailure: servidor casado e falho devolve aviso com a consequên
   const line = describeMcpFailure(withCodeReviewGraphDetected(), [{ name: "code-review-graph", status: "failed" }]);
   assert.match(line, /code-review-graph/);
   assert.match(line, /varrer arquivo/);
+});
+
+const SETUP_TEMPLATE = [
+  "#!/usr/bin/env bash",
+  "set -euo pipefail",
+  "",
+  '# Python',
+  '# python3 -m pip install --quiet --break-system-packages -e ".[dev]"',
+  "",
+  'echo "setup: nada a fazer (edite .ralph/setup.sh)"',
+  "",
+].join("\n");
+
+test("withInstallBlock: repositório sem índice devolve o setup.sh idêntico", () => {
+  assert.equal(withInstallBlock(SETUP_TEMPLATE, []), SETUP_TEMPLATE);
+});
+
+test("withInstallBlock: graphify sozinho (sem binário a instalar) devolve o setup.sh idêntico", () => {
+  const detected = [{ id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() }];
+  assert.equal(withInstallBlock(SETUP_TEMPLATE, detected), SETUP_TEMPLATE);
+});
+
+test("withInstallBlock: code-review-graph detectado insere o passo de instalação", () => {
+  const out = withInstallBlock(SETUP_TEMPLATE, withCodeReviewGraphDetected());
+  assert.match(out, /pip install --quiet --break-system-packages code-review-graph/);
+  assert.match(out, /3, 10/);
+  assert.ok(out.startsWith("#!/usr/bin/env bash\nset -euo pipefail\n"));
+  assert.match(out, /echo "setup: nada a fazer/);
+});
+
+test("withInstallBlock: aplicar duas vezes não duplica o bloco", () => {
+  const once = withInstallBlock(SETUP_TEMPLATE, withCodeReviewGraphDetected());
+  const twice = withInstallBlock(once, withCodeReviewGraphDetected());
+  assert.equal(twice, once);
+  assert.equal(once.match(/code-review-graph precisa do binário/g).length, 1);
+});
+
+test("withInstallBlock: preserva o conteúdo do usuário fora do bloco gerado", () => {
+  const custom = SETUP_TEMPLATE.replace(
+    '# python3 -m pip install --quiet --break-system-packages -e ".[dev]"',
+    'python3 -m pip install --quiet --break-system-packages -e ".[dev]"'
+  );
+  const out = withInstallBlock(custom, withCodeReviewGraphDetected());
+  assert.match(out, /-e "\.\[dev\]"/);
+  assert.match(out, /pip install --quiet --break-system-packages code-review-graph/);
 });

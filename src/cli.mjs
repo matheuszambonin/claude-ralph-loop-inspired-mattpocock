@@ -22,6 +22,7 @@ import {
   describeDegradation as describeKnowledgeIndexDegradation,
   needsOllamaProbe,
   probe as probeKnowledgeIndex,
+  withInstallBlock,
 } from "./knowledge-index.mjs";
 
 const root = repoRoot();
@@ -116,13 +117,24 @@ function cmdInit(flags) {
     copyFileSync(path.join(ralphHome(), "templates", "setup.sh"), setup);
   }
 
+  // Roda em todo `init`, não só quando `setup.sh` acaba de nascer do template:
+  // o índice pode ter sido construído depois do primeiro `ralph init`. Pura e
+  // idempotente (ver `withInstallBlock`) — repositório sem backend que precise
+  // de binário no sandbox não grava nada de novo (ADR-0001).
+  const setupBefore = readFileSync(setup, "utf8");
+  const setupAfter = withInstallBlock(setupBefore, detectKnowledgeIndex(root, cfg));
+  const setupChanged = setupAfter !== setupBefore;
+  if (setupChanged) writeFileSync(setup, setupAfter, "utf8");
+
   const ignore = path.join(dir, ".gitignore");
   if (!existsSync(ignore)) writeFileSync(ignore, "logs/\n", "utf8");
 
   process.stdout.write(`${paint(C.green, "✓")} .ralph/ criado em ${root}\n\n`);
   process.stdout.write(`  prompt        ${cfg.promptFile}\n`);
   process.stdout.write(`  progresso     ${cfg.progressFile}\n`);
-  process.stdout.write(`  setup         ${cfg.setupScript ?? ".ralph/setup.sh"}\n`);
+  process.stdout.write(
+    `  setup         ${cfg.setupScript ?? ".ralph/setup.sh"}${setupChanged ? paint(C.dim, " (instalação do índice de conhecimento adicionada)") : ""}\n`
+  );
   process.stdout.write(`  sandbox       ${cfg.sandboxName}\n`);
   process.stdout.write(`  modelo        ${cfg.model}\n`);
   process.stdout.write(

@@ -200,6 +200,85 @@ export function render(detected, probeResult) {
   return { promptBlock, mcpConfig, tools };
 }
 
+const INSTALL_BLOCK_START = "# --- ralph:knowledge-index begin (gerado por `ralph init`, não edite à mão) ---";
+const INSTALL_BLOCK_END = "# --- ralph:knowledge-index end ---";
+
+/**
+ * Trecho do `code-review-graph` em si — só ele precisa de binário dentro do
+ * sandbox (issue #6: a tool MCP não sobe sem o comando existir lá). `graphify`
+ * é lido em prosa direto do manifesto (ver `PROMPT_HINTS`) e não instala nada.
+ *
+ * O pacote exige Python >=3.10 (pypi.org/project/code-review-graph) e o
+ * sandbox padrão do Docker não garante isso no `python3` default — por isso o
+ * trecho varre os interpretadores versionados mais comuns e fixa o primeiro
+ * que servir, em vez de confiar cegamente no `python3` do PATH (que, sem essa
+ * varredura, dá um erro de `pip` reclamando de sintaxe alheia, não o motivo
+ * real). Não foi possível provar contra um sandbox de verdade quais
+ * interpreters ele realmente tem — comentado na issue #6 ao fechar.
+ */
+function crgInstallSnippet() {
+  return [
+    "# code-review-graph precisa do binário de consulta dentro do sandbox —",
+    "# a tool MCP do índice não sobe sem ele (ADR-0002). Idempotente: rodar de",
+    "# novo só reconfirma que o pacote está instalado.",
+    'crg_python=""',
+    "for candidate in python3.13 python3.12 python3.11 python3.10 python3; do",
+    '  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c \'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)\' 2>/dev/null; then',
+    '    crg_python="$candidate"',
+    "    break",
+    "  fi",
+    "done",
+    'if [ -z "$crg_python" ]; then',
+    '  echo "setup: nenhum interpretador Python >=3.10 encontrado (exigido por code-review-graph)." >&2',
+    '  echo "setup: instale um (ex.: python3.12) e adicione ao PATH do sandbox." >&2',
+    "  exit 1",
+    "fi",
+    '"$crg_python" -m pip install --quiet --break-system-packages code-review-graph',
+  ].join("\n");
+}
+
+/** Snippet de instalação, ou `null` quando nenhum backend detectado precisa de binário no sandbox. */
+function installSnippet(detected) {
+  return detected.some((b) => b.id === CRG_ID) ? crgInstallSnippet() : null;
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Injeta (ou atualiza, ou remove) o passo de instalação do backend dentro de
+ * `setup.sh` do repositório alvo — issue #6. Pura: recebe o script e a
+ * detecção como dado, sem tocar disco, para ficar testável sem sandbox.
+ *
+ * O bloco é delimitado por marcadores para que reaplicar (`ralph init` de
+ * novo, ou um backend novo aparecendo) substitua em vez de duplicar — mesma
+ * garantia que ADR-0001 pede para o resto do índice: detectar de novo não
+ * pode acumular lixo. Repositório sem backend que precise de binário (sem
+ * índice, ou só `graphify`) devolve o script **idêntico**, byte a byte — a
+ * mesma prova que a issue #4 já fez para o placeholder do prompt.
+ */
+export function withInstallBlock(setupScript, detected) {
+  // Exige o `\n` de cada lado (não `\n?`) porque é exatamente o que a inserção
+  // abaixo acrescenta ao redor do bloco — casar só esses dois devolve o script
+  // ao estado anterior à inserção, sem sobrar nem faltar linha em branco.
+  // Um `\n?` opcional nos dois lados comeria as quebras originais também,
+  // acumulando uma linha em branco a mais a cada reaplicação.
+  const blockRe = new RegExp(`\\n${escapeRegExp(INSTALL_BLOCK_START)}[\\s\\S]*?${escapeRegExp(INSTALL_BLOCK_END)}\\n`);
+  const withoutBlock = setupScript.replace(blockRe, "");
+
+  const snippet = installSnippet(detected);
+  if (!snippet) return withoutBlock;
+
+  const block = `${INSTALL_BLOCK_START}\n${snippet}\n${INSTALL_BLOCK_END}`;
+  const anchor = "set -euo pipefail\n";
+  const idx = withoutBlock.indexOf(anchor);
+  if (idx === -1) return `${withoutBlock.trimEnd()}\n\n${block}\n`;
+
+  const insertAt = idx + anchor.length;
+  return `${withoutBlock.slice(0, insertAt)}\n${block}\n${withoutBlock.slice(insertAt)}`;
+}
+
 function relativeAge(date) {
   const days = Math.floor((Date.now() - date.getTime()) / 86_400_000);
   if (days <= 0) return "hoje";
