@@ -24,6 +24,7 @@ import {
   probe as probeKnowledgeIndex,
   withInstallBlock,
 } from "./knowledge-index.mjs";
+import { checkOrientationContract, readOrientationTemplate } from "./orientation.mjs";
 
 const root = repoRoot();
 
@@ -183,6 +184,21 @@ async function cmdDoctor() {
   // repositório sem índice de conhecimento produz a mesma saída de sempre.
   const detectedIndexes = detectKnowledgeIndex(root, cfg);
   for (const line of describeKnowledgeIndex(detectedIndexes)) ok(line);
+
+  // Só cobra o contrato de quem de fato delega (checkOrientationContract
+  // devolve applicable: false pro resto) — um prompt.md antigo ou custom que
+  // orienta inline não é bug (issue #17).
+  const promptPath = path.join(root, cfg.promptFile);
+  if (existsSync(promptPath)) {
+    const contract = checkOrientationContract(readFileSync(promptPath, "utf8"), readOrientationTemplate());
+    if (contract.applicable) {
+      contract.ok
+        ? ok("contrato do Resumo de orientação em dia")
+        : warn(
+            `contrato do Resumo de orientação divergiu (${cfg.promptFile} está desatualizado em relação ao template instalado) — rode 'ralph init --force' para re-sincronizar. ${contract.issues.join("; ")}`
+          );
+    }
+  }
 
   if (!(await dockerAvailable())) return bad("docker sandbox indisponível — Docker Desktop está rodando?");
   ok("docker sandbox disponível");

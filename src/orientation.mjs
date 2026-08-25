@@ -59,3 +59,70 @@ export function buildOrientationAgent(promptText, cfg, indexTools = []) {
     },
   };
 }
+
+/**
+ * Mesma menção que faz a delegação acontecer de verdade (`prompts/implement.md`,
+ * passo 1) — checar por ela é o único jeito de saber, a partir só do texto, que
+ * um prompt de iteração depende do contrato da Orientação em vez de orientar
+ * inline (issue #17).
+ */
+const DELEGATION_MARKER = 'subagent_type: "orientation"';
+
+/**
+ * O bloco de contrato é o primeiro cercado por crase que contém uma linha
+ * `STATUS:` — os dois prompts distribuídos colam o mesmo bloco de exemplo, e é
+ * dele que a iteração de fato lê os rótulos e os estados aceitos.
+ */
+function contractBlock(text) {
+  for (const match of text.matchAll(/```[^\n]*\n([\s\S]*?)```/g)) {
+    if (/^STATUS:/m.test(match[1])) return match[1];
+  }
+  return null;
+}
+
+/**
+ * Rótulos na ordem em que aparecem (`STATUS`, `TICKET`, ...) e os estados que
+ * `STATUS` aceita (`ready | complete | blocked`, o único rótulo com uma lista
+ * fechada). Prosa depois dos dois-pontos não entra — é isso que deixa
+ * reformatação inofensiva do bloco passar.
+ */
+function parseContract(block) {
+  const labels = [];
+  let states = [];
+  for (const line of block.split("\n")) {
+    const m = line.match(/^([A-Z_]+):\s*(.*)$/);
+    if (!m) continue;
+    labels.push(m[1]);
+    if (m[1] === "STATUS") states = m[2].split("|").map((s) => s.trim().split(/\s/)[0]).filter(Boolean);
+  }
+  return { labels, states };
+}
+
+/**
+ * Pura (issue #17 / spec #16): recebe os dois textos como dado, não sabe de
+ * onde vieram, e serve tanto ao teste que compara os dois prompts distribuídos
+ * quanto ao `doctor` que compara o prompt do repo alvo com o template
+ * instalado. Prompt de iteração que não menciona o subagente não tem contrato
+ * a checar — `applicable: false`, nem passa nem reprova.
+ */
+export function checkOrientationContract(iterationPromptText, orientationTemplateText) {
+  if (!iterationPromptText.includes(DELEGATION_MARKER)) return { applicable: false };
+
+  const iterationBlock = contractBlock(iterationPromptText);
+  const orientationBlock = contractBlock(orientationTemplateText);
+  const iteration = iterationBlock ? parseContract(iterationBlock) : { labels: [], states: [] };
+  const orientation = orientationBlock ? parseContract(orientationBlock) : { labels: [], states: [] };
+
+  const issues = [];
+  if (JSON.stringify(iteration.labels) !== JSON.stringify(orientation.labels)) {
+    issues.push(`labels: iteration prompt expects [${iteration.labels.join(", ")}], orientation reports [${orientation.labels.join(", ")}]`);
+  }
+  const orientationStates = new Set(orientation.states);
+  const iterationStates = new Set(iteration.states);
+  const statesDiffer = iteration.states.some((s) => !orientationStates.has(s)) || orientation.states.some((s) => !iterationStates.has(s));
+  if (statesDiffer) {
+    issues.push(`states: iteration prompt accepts [${iteration.states.join(", ")}], orientation reports [${orientation.states.join(", ")}]`);
+  }
+
+  return { applicable: true, ok: issues.length === 0, issues };
+}

@@ -1,9 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { renderOrientationPrompt, buildOrientationAgent, buildOrientationPrompt, readOrientationTemplate } from "../src/orientation.mjs";
+import {
+  renderOrientationPrompt,
+  buildOrientationAgent,
+  buildOrientationPrompt,
+  readOrientationTemplate,
+  checkOrientationContract,
+} from "../src/orientation.mjs";
+import { ralphHome } from "../src/paths.mjs";
 
 function tmpRepo(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "ralph-orientation-"));
@@ -95,4 +102,82 @@ test("buildOrientationPrompt: o template real não deixa placeholder por resolve
 test("readOrientationTemplate: o template real só usa placeholder que a montagem resolve", () => {
   const used = [...readOrientationTemplate().matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(used)].sort(), ["KNOWLEDGE_INDEX_BLOCK", "PROGRESS_FILE"]);
+});
+
+// ------------------------------------------------------- checkOrientationContract --
+
+function delegatingPrompt(block) {
+  return `## 1. Orient — delegate it\n\nUse the Agent tool with \`subagent_type: "orientation"\` to figure out.\n\n${block}\n`;
+}
+
+const CONTRACT_BLOCK = ["```", "STATUS: ready | complete | blocked", "TICKET: ...", "WHY: ...", "CONTEXT: ...", "```"].join("\n");
+
+test("checkOrientationContract: contrato idêntico passa", () => {
+  const result = checkOrientationContract(delegatingPrompt(CONTRACT_BLOCK), CONTRACT_BLOCK);
+  assert.equal(result.applicable, true);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.issues, []);
+});
+
+test("checkOrientationContract: rótulo removido reprova", () => {
+  const orientation = ["```", "STATUS: ready | complete | blocked", "TICKET: ...", "CONTEXT: ...", "```"].join("\n");
+  const result = checkOrientationContract(delegatingPrompt(CONTRACT_BLOCK), orientation);
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join("\n"), /labels/);
+});
+
+test("checkOrientationContract: rótulo renomeado reprova", () => {
+  const orientation = CONTRACT_BLOCK.replace("WHY:", "REASON:");
+  const result = checkOrientationContract(delegatingPrompt(CONTRACT_BLOCK), orientation);
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join("\n"), /labels/);
+});
+
+test("checkOrientationContract: ordem dos rótulos trocada reprova", () => {
+  const orientation = ["```", "STATUS: ready | complete | blocked", "WHY: ...", "TICKET: ...", "CONTEXT: ...", "```"].join("\n");
+  const result = checkOrientationContract(delegatingPrompt(CONTRACT_BLOCK), orientation);
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join("\n"), /labels/);
+});
+
+test("checkOrientationContract: estado a mais de um lado reprova", () => {
+  const orientation = CONTRACT_BLOCK.replace("ready | complete | blocked", "ready | complete | blocked | needs-info");
+  const result = checkOrientationContract(delegatingPrompt(CONTRACT_BLOCK), orientation);
+  assert.equal(result.ok, false);
+  assert.match(result.issues.join("\n"), /states/);
+});
+
+test("checkOrientationContract: espaçamento e prosa diferentes com os mesmos rótulos passa", () => {
+  const orientation = [
+    "Reply with exactly this shape:",
+    "",
+    "```",
+    "STATUS:   ready | complete | blocked",
+    "TICKET: <id and title — empty when STATUS is complete or blocked>",
+    "WHY:  <one paragraph>",
+    "CONTEXT:   <bullet list>",
+    "```",
+    "",
+    "If you can't fill this in, say so.",
+  ].join("\n");
+  const iteration = delegatingPrompt(
+    ["Reports back in this shape:", "", CONTRACT_BLOCK, "", "Trust its CONTEXT instead of re-reading."].join("\n")
+  );
+  const result = checkOrientationContract(iteration, orientation);
+  assert.equal(result.ok, true);
+});
+
+test("checkOrientationContract: prompt que não delega devolve 'não se aplica' mesmo com formatos divergentes", () => {
+  const iteration = "## 1. Orient — cheaply\n\nRead only these, in this order:\n1. docs/agents/issue-tracker.md\n";
+  const orientation = ["```", "STATUS: ready | complete | blocked", "TICKET: ...", "```"].join("\n");
+  const result = checkOrientationContract(iteration, orientation);
+  assert.deepEqual(result, { applicable: false });
+});
+
+test("checkOrientationContract: os dois prompts distribuídos com a ferramenta batem", () => {
+  const iterationPrompt = readFileSync(path.join(ralphHome(), "prompts", "implement.md"), "utf8");
+  const orientationTemplate = readOrientationTemplate();
+  const result = checkOrientationContract(iterationPrompt, orientationTemplate);
+  assert.equal(result.applicable, true);
+  assert.equal(result.ok, true, result.issues.join("; "));
 });
