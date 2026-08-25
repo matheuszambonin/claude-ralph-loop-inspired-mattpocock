@@ -7,6 +7,7 @@ import {
   detect,
   render,
   describe,
+  describeAvailability,
   describeDegradation,
   describeMcpFailure,
   describeInstallFailure,
@@ -209,6 +210,21 @@ test("render: dois backends detectados, o bloco diz qual consultar primeiro e po
   const { promptBlock } = render(detected, null);
   assert.match(promptBlock, /Start with code-review-graph/);
   assert.match(promptBlock, /cheaper/);
+});
+
+test("describeAvailability: sem code-review-graph detectado devolve null", () => {
+  assert.equal(describeAvailability([]), null);
+  assert.equal(
+    describeAvailability([{ id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() }]),
+    null
+  );
+});
+
+test("describeAvailability: fala do índice de conhecimento e do label do backend, não do processo (Ollama)", () => {
+  const line = describeAvailability(withCodeReviewGraphDetected());
+  assert.match(line, /índice de conhecimento/);
+  assert.match(line, /\(code-review-graph\)/);
+  assert.doesNotMatch(line, /Ollama/);
 });
 
 test("describeDegradation: sem code-review-graph detectado devolve null", () => {

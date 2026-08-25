@@ -19,6 +19,7 @@ import { paint, colors as C } from "./stream.mjs";
 import {
   detect as detectKnowledgeIndex,
   describe as describeKnowledgeIndex,
+  describeAvailability as describeKnowledgeIndexAvailability,
   describeDegradation as describeKnowledgeIndexDegradation,
   describeInstallFailure as describeKnowledgeIndexInstallFailure,
   needsOllamaProbe,
@@ -216,7 +217,7 @@ async function cmdDoctor() {
   if (needsOllamaProbe(detectedIndexes)) {
     const probed = await probeKnowledgeIndex(cfg.sandboxName);
     const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
-    degradation ? warn(degradation) : ok("busca semântica do code-review-graph disponível (Ollama alcançável)");
+    degradation ? warn(degradation) : ok(describeKnowledgeIndexAvailability(detectedIndexes));
   }
 
   // Só o code-review-graph precisa de binário no sandbox, mesma guarda de

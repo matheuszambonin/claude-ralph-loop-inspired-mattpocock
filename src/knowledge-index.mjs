@@ -448,6 +448,20 @@ export function describeInstallFailure(installResult) {
 }
 
 /**
+ * Linha verde para o `doctor` quando a busca semântica está disponível — a
+ * issue #13 pegou que a linha antiga nomeava o backend duas vezes
+ * (`code-review-graph` no texto, "Ollama alcançável" no processo por trás
+ * dele) onde o CONTEXT.md pede o conceito (índice de conhecimento), não o
+ * backend. Fala do índice e do `label` do backend detectado; o nome do
+ * processo (Ollama) fica só na linha de degradação, onde é acionável.
+ */
+export function describeAvailability(detected) {
+  const backend = detected.find((b) => b.id === CRG_ID);
+  if (!backend) return null;
+  return `busca semântica do índice de conhecimento disponível (${backend.label})`;
+}
+
+/**
  * Linha de aviso amarela para o `doctor` quando a busca semântica degradou —
  * `null` quando não há `code-review-graph` detectado ou quando o Ollama
  * respondeu. Erro de usuário diz o comando que conserta (CLAUDE.md).
