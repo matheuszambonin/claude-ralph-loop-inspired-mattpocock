@@ -51,6 +51,28 @@ const PROMPT_HINTS = {
 };
 
 /**
+ * Custo relativo por backend (issue #18) — menor primeiro. Julgamento de
+ * produto, não fato medido: valide antes de aceitar, não só codifique.
+ *
+ * `code-review-graph` tem `get_minimal_context_tool` — CRG_TOOLS já existe
+ * porque o backend responde a uma pergunta pontual sem ler mais que isso.
+ * `graphify` não tem tool nenhuma: mesmo "só a seção de navegação"
+ * (PROMPT_HINTS acima) é um recorte de arquivo, não uma consulta — não há
+ * como pedir menos que isso ao manifesto. A diferença que sustenta a ordem
+ * não é "SQLite é rápido", é ter ou não um caminho para pedir só o que
+ * precisa. Só entra no bloco de prompt quando dois ou mais backends
+ * coexistem, porque com um só não há ordem para escolher.
+ */
+const BACKEND_COST_RANK = {
+  [CRG_ID]: 0,
+  [GRAPHIFY_ID]: 1,
+};
+const BACKEND_COST_WHY = {
+  [CRG_ID]: "a single structured query",
+  [GRAPHIFY_ID]: "always reads a document",
+};
+
+/**
  * Um backend por assinatura de artefato em disco — mesmo padrão que
  * `detectFeedbackLoops` em cli.mjs já usa para achar scripts do package.json.
  *
@@ -205,6 +227,19 @@ function mcpServerFor(id, containerRoot, tools, embeddingEnv) {
 }
 
 /**
+ * Linha extra do bloco de prompt (issue #18) quando dois ou mais backends
+ * coexistem — nomeia o mais barato e por quê, para o agente não escolher por
+ * ordem arbitrária de detecção.
+ */
+function costPriorityLine(detected) {
+  const [cheapest] = [...detected].sort(
+    (a, b) => (BACKEND_COST_RANK[a.id] ?? Infinity) - (BACKEND_COST_RANK[b.id] ?? Infinity)
+  );
+  const why = BACKEND_COST_WHY[cheapest.id];
+  return `Start with ${cheapest.label} — it's the cheaper lookup${why ? ` (${why})` : ""}; only check the others if it doesn't answer.`;
+}
+
+/**
  * A costura: pura, sem Docker, rede ou disco. Recebe detecção e sonda como
  * dado.
  *
@@ -225,7 +260,8 @@ export function render(detected, probeResult, opts = {}) {
     detected
       .map((b) => `- ${b.label} (${b.path})` + (PROMPT_HINTS[b.id] ? `: ${PROMPT_HINTS[b.id]}` : ""))
       .join("\n") +
-    "\n";
+    "\n" +
+    (detected.length > 1 ? costPriorityLine(detected) + "\n" : "");
 
   const ollamaReachable = probeResult?.ollamaReachable ?? false;
   const tools = [];

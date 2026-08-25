@@ -190,6 +190,27 @@ test("render: backend em prosa (graphify) aponta a seção de navegação, não 
   assert.match(promptBlock, /navigation section/);
 });
 
+test("render: um backend só produz o mesmo promptBlock de antes da issue #18", () => {
+  const { promptBlock } = render(withCodeReviewGraphDetected(), null);
+  assert.equal(
+    promptBlock,
+    "Knowledge index detected — consult it before you grep:\n" +
+      "- code-review-graph (/repo/.code-review-graph/graph.db): paths this tool returns are host-formatted " +
+      "(`C:\\...`); translate to the sandbox by lowercasing the drive letter and turning backslashes into " +
+      "slashes (`/c/...`)\n"
+  );
+});
+
+test("render: dois backends detectados, o bloco diz qual consultar primeiro e por quê", () => {
+  const detected = [
+    ...withCodeReviewGraphDetected(),
+    { id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() },
+  ];
+  const { promptBlock } = render(detected, null);
+  assert.match(promptBlock, /Start with code-review-graph/);
+  assert.match(promptBlock, /cheaper/);
+});
+
 test("describeDegradation: sem code-review-graph detectado devolve null", () => {
   assert.equal(describeDegradation([], { ollamaReachable: false }), null);
 });
