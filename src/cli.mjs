@@ -20,8 +20,10 @@ import {
   detect as detectKnowledgeIndex,
   describe as describeKnowledgeIndex,
   describeDegradation as describeKnowledgeIndexDegradation,
+  describeInstallFailure as describeKnowledgeIndexInstallFailure,
   needsOllamaProbe,
   probe as probeKnowledgeIndex,
+  probeInstall as probeKnowledgeIndexInstall,
   withInstallBlock,
 } from "./knowledge-index.mjs";
 import { checkOrientationContract, readOrientationTemplate } from "./orientation.mjs";
@@ -216,6 +218,16 @@ async function cmdDoctor() {
     const probed = await probeKnowledgeIndex(cfg.sandboxName);
     const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
     degradation ? warn(degradation) : ok("busca semântica do code-review-graph disponível (Ollama alcançável)");
+  }
+
+  // Só o code-review-graph precisa de binário no sandbox, mesma guarda de
+  // `needsOllamaProbe` só que aplicada dentro de `probeInstall` (issue #12) —
+  // é a checagem que dá ao aviso de MCP-falho da iteração algo de verdade
+  // para diagnosticar.
+  const installProbe = await probeKnowledgeIndexInstall(cfg.sandboxName, detectedIndexes);
+  if (installProbe) {
+    const installFailure = describeKnowledgeIndexInstallFailure(installProbe);
+    installFailure ? warn(installFailure) : ok("binário do code-review-graph instalado no sandbox");
   }
 
   const stamped = await execCapture(cfg.sandboxName, ["test", "-f", "/home/agent/.claude/.ralph-bootstrap"]);

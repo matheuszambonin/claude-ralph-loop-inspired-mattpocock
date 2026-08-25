@@ -3,7 +3,16 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { detect, render, describe, describeDegradation, describeMcpFailure, withInstallBlock, CRG_ID } from "../src/knowledge-index.mjs";
+import {
+  detect,
+  render,
+  describe,
+  describeDegradation,
+  describeMcpFailure,
+  describeInstallFailure,
+  withInstallBlock,
+  CRG_ID,
+} from "../src/knowledge-index.mjs";
 
 function tmpRepo(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "ralph-knowledge-index-"));
@@ -226,10 +235,25 @@ test("describeMcpFailure: servidor casado e conectado devolve null", () => {
   assert.equal(line, null);
 });
 
-test("describeMcpFailure: servidor casado e falho devolve aviso com a consequência em palavras", () => {
+test("describeMcpFailure: servidor casado e falho devolve aviso com a consequência em palavras e o comando que investiga", () => {
   const line = describeMcpFailure(withCodeReviewGraphDetected(), [{ name: "code-review-graph", status: "failed" }]);
   assert.match(line, /code-review-graph/);
   assert.match(line, /varrer arquivo/);
+  assert.match(line, /ralph doctor/);
+});
+
+test("describeInstallFailure: sem resultado de sonda (repositório sem backend que precise de binário) devolve null", () => {
+  assert.equal(describeInstallFailure(null), null);
+});
+
+test("describeInstallFailure: binário instalado devolve null", () => {
+  assert.equal(describeInstallFailure({ installed: true }), null);
+});
+
+test("describeInstallFailure: binário ausente devolve aviso com o comando que conserta", () => {
+  const line = describeInstallFailure({ installed: false });
+  assert.match(line, /code-review-graph/);
+  assert.match(line, /ralph bootstrap --force/);
 });
 
 const SETUP_TEMPLATE = [

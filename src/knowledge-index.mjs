@@ -343,9 +343,14 @@ export function describe(detected) {
   return detected.map((b) => `índice ${b.label} detectado em ${b.path} (atualizado ${relativeAge(b.updatedAt)})`);
 }
 
+/** Se algum detectado é o `code-review-graph` — o único backend que sobe MCP e por isso o único que precisa de sonda (Ollama) ou de binário no sandbox. */
+function hasCrgBackend(detected) {
+  return detected.some((b) => b.id === CRG_ID);
+}
+
 /** Se algum detectado precisa da sonda de Ollama — hoje só o `code-review-graph`. */
 export function needsOllamaProbe(detected) {
-  return detected.some((b) => b.id === CRG_ID);
+  return hasCrgBackend(detected);
 }
 
 /**
@@ -359,6 +364,12 @@ export function needsOllamaProbe(detected) {
  *
  * `mcpServers` que não é array (sessão sem o campo, ou repositório sem
  * índice) devolve `null` — silêncio, não suposição.
+ *
+ * Fecha com `ralph doctor` (CLAUDE.md: "erro de usuário diz o comando que
+ * conserta") porque, desde a issue #12, o `doctor` checa se o binário do
+ * backend está no PATH do sandbox — a causa mais comum deste aviso. Não prova
+ * que o binário instalado de fato conecta (caminho de `--repo` errado, banco
+ * corrompido); só descarta a causa mais barata de investigar primeiro.
  */
 export function describeMcpFailure(detected, mcpServers) {
   if (!detected.length || !Array.isArray(mcpServers)) return null;
@@ -368,7 +379,35 @@ export function describeMcpFailure(detected, mcpServers) {
   if (!failed.length) return null;
   return (
     `MCP do índice de conhecimento não subiu na sessão: ${failed.map((b) => b.label).join(", ")}. ` +
-    "Esta iteração vai varrer arquivo em vez de consultar o índice."
+    "Esta iteração vai varrer arquivo em vez de consultar o índice. " +
+    "Rode 'ralph doctor' para descobrir por quê."
+  );
+}
+
+/**
+ * Confirma, de dentro do sandbox, que o binário do backend está instalado e
+ * no PATH — a causa mais provável de `describeMcpFailure` disparar depois que
+ * o `setup.sh` já rodou uma vez: reinstalar o sandbox (`ralph rm`), um
+ * `python3` diferente ganhando o PATH, ou o `.ralph/setup.sh` nunca tendo
+ * rodado porque `ralph doctor` roda sem preparar o sandbox. Só `graphify` não
+ * precisa de binário (é lido em prosa), então devolve `null` para ele.
+ */
+export async function probeInstall(sandboxName, detected) {
+  if (!hasCrgBackend(detected)) return null;
+  const check = await execCapture(sandboxName, ["bash", "-lc", `command -v ${CRG_ID} >/dev/null 2>&1 && echo yes || echo no`]);
+  return { installed: check.stdout.trim() === "yes" };
+}
+
+/**
+ * Linha de aviso amarela para o `doctor` quando o binário do backend não está
+ * no PATH do sandbox. `installResult` ausente (repositório sem backend que
+ * precise de binário) devolve `null` — mesma convenção de `describeDegradation`.
+ */
+export function describeInstallFailure(installResult) {
+  if (!installResult || installResult.installed) return null;
+  return (
+    "binário do code-review-graph ausente no sandbox — o MCP do índice não vai subir e a iteração vai varrer arquivo. " +
+    "Rode 'ralph bootstrap --force' para reinstalar."
   );
 }
 
