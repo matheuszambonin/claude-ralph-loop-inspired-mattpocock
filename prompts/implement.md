@@ -7,9 +7,8 @@ you finish. Work on exactly ONE ticket, then stop.
 ## 1. Orient — delegate it
 
 Use the Agent tool with `subagent_type: "orientation"` to figure out which
-ticket to work on. It reads the issue tracker, `{{PROGRESS_FILE}}`,
-`CLAUDE.md`/`AGENTS.md`/`CONTEXT.md`, the ADRs, and the knowledge index (if
-any), and reports back in this shape:
+ticket to work on. It reads the issue tracker, `{{PROGRESS_FILE}}` and the
+project's docs, and reports back in this shape:
 
 ```
 STATUS: ready | complete | blocked
@@ -36,8 +35,8 @@ yourself.
 
 ## 3. Implement it
 
-Use `/mattpocock-skills:tdd` at the seams the spec agreed on. Prefer existing
-seams to new ones. Respect the project's domain vocabulary and its ADRs.
+Use `/mattpocock-skills:tdd`. Prefer existing seams to new ones. Respect the
+project's domain vocabulary and its ADRs.
 
 Stay inside the ticket. If you discover adjacent work, file it as a new ticket
 on the tracker instead of doing it — a Ralph iteration that widens its own

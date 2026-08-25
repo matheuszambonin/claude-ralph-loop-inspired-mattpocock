@@ -9,7 +9,10 @@ export const DEFAULTS = {
   /** Modelo do subagente de Orientação. Campo plano, não aninhado, para que
    *  um config.json existente continue válido sem migração (ADR-0004). Haiku
    *  é o padrão porque a Orientação só precisa ler e relatar, nunca implementar
-   *  — se a janela de 200K degradar num repo grande, troca-se para "sonnet". */
+   *  — se a janela de 200K degradar num repo grande, troca-se para "sonnet".
+   *  Não há knob de effort aqui: Haiku não aceita effort, e Sonnet custa 2x por
+   *  token — como a Orientação é dominada por input, effort cortaria só a parte
+   *  pequena da conta e nunca pagaria a troca de modelo. */
   orientationModel: "haiku",
   /** Teto de iterações do `ralph afk` quando -n não é passado. */
   maxIterations: 20,

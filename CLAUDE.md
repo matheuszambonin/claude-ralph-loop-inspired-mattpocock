@@ -10,6 +10,9 @@ Não há build e não há dependências — `src/*.mjs` roda direto no Node 18+.
 
 - Comentários e texto de interface em português; identificadores, nomes de
   arquivo e os prompts de `prompts/` em inglês.
+- Em `prompts/`, corte a linha que não muda comportamento. A exceção é a linha
+  que proíbe o que o sandbox permite tecnicamente (push, PR, claim de ticket):
+  ela não é prosa, é a única coisa que segura.
 - Comentário registra o **porquê**, tipicamente o bug que motivou a linha
   (veja `core.autocrlf` em `src/runner.mjs`). Não descreva o que o código já diz.
 - Zero dependências: só a biblioteca padrão do Node. Isso é uma restrição de

@@ -15,6 +15,13 @@ Uma implementação concreta de índice de conhecimento, com seu próprio jeito 
 ser consultada. Um repositório pode ter vários ao mesmo tempo.
 _Avoid_: provider, engine, motor
 
+**Iteração**:
+Uma passagem completa do loop sobre o repositório alvo: começa sem memória
+nenhuma, entrega no máximo um ticket e termina esquecendo tudo. É ao mesmo
+tempo a unidade de trabalho e a unidade de esquecimento — o que precisa
+sobreviver a ela precisa estar em disco antes de ela acabar.
+_Avoid_: rodada, execução, run, volta do loop, sessão
+
 **Orientação**:
 A fase inicial de uma iteração, em que o agente descobre o que precisa saber
 antes de mexer em código. É onde o índice de conhecimento é consultado, e é a
