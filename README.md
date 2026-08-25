@@ -191,6 +191,7 @@ repositório alvo (Issues: read/write, Contents: read) e passe
 ```jsonc
 {
   "model": "sonnet",              // muitas iterações baratas > poucas caras
+  "orientationModel": "haiku",    // o subagente que faz a Orientação
   "maxIterations": 20,            // teto padrão do afk
   "completionPromise": "COMPLETE",
   "blockedPromise": "BLOCKED",

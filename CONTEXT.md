@@ -21,7 +21,7 @@ antes de mexer em código. É onde o índice de conhecimento é consultado, e é
 fase que o loop existe para manter barata. O que ela entrega é um resumo — o
 ticket escolhido e o que ele exige —, não o material lido para chegar lá; por
 isso ela não precisa acontecer no mesmo contexto que a consome.
-_Avoid_: exploração, varredura, reconhecimento
+_Avoid_: exploração, varredura, reconhecimento, scout
 
 **Resumo de orientação**:
 O que sobrevive à Orientação e entra no contexto da iteração. Tudo o que foi

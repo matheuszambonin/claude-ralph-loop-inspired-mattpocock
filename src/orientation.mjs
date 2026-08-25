@@ -28,7 +28,6 @@ export function readOrientationTemplate() {
 export function renderOrientationPrompt(template, cfg, promptBlock) {
   return template
     .replaceAll("{{PROGRESS_FILE}}", cfg.progressFile)
-    .replaceAll("{{BLOCKED_PROMISE}}", cfg.blockedPromise ?? "BLOCKED")
     .replaceAll("{{KNOWLEDGE_INDEX_BLOCK}}\n", promptBlock);
 }
 
@@ -41,7 +40,7 @@ export function buildOrientationPrompt(root, cfg) {
 /**
  * Pura: config e prompt entram, definição do subagente sai — sem Docker. É a
  * costura que a issue #10 pediu para o `--agents` da invocação: modelo vem do
- * config (`scoutModel`, default "haiku" — ver DEFAULTS em config.mjs) e a
+ * config (`orientationModel`, default "haiku" — ver DEFAULTS em config.mjs) e a
  * whitelist é a garantia, testável aqui, de que quem orienta não escreve.
  */
 export function buildOrientationAgent(promptText, cfg) {
@@ -51,7 +50,7 @@ export function buildOrientationAgent(promptText, cfg) {
         "Reads the issue tracker, PROGRESS.md and the project's docs to pick the next ticket for this iteration, without writing anything.",
       prompt: promptText,
       tools: TOOL_WHITELIST,
-      model: cfg.scoutModel ?? "haiku",
+      model: cfg.orientationModel ?? "haiku",
     },
   };
 }

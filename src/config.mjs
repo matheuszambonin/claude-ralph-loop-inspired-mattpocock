@@ -10,7 +10,7 @@ export const DEFAULTS = {
    *  um config.json existente continue válido sem migração (ADR-0004). Haiku
    *  é o padrão porque a Orientação só precisa ler e relatar, nunca implementar
    *  — se a janela de 200K degradar num repo grande, troca-se para "sonnet". */
-  scoutModel: "haiku",
+  orientationModel: "haiku",
   /** Teto de iterações do `ralph afk` quando -n não é passado. */
   maxIterations: 20,
   /** String que o agente emite dentro de <promise>…</promise> para encerrar. */

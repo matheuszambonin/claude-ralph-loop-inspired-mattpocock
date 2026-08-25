@@ -53,4 +53,4 @@ economia é indistinguível de 0%, e as duas decisões acima viram fé.
 
 O haiku tem janela de 200K contra 1M do sonnet. Um repositório grande pode
 estourar a janela na Orientação. Não há tratamento: se degradar, troca-se
-`scoutModel` para sonnet e ainda sobram os 26%.
+`orientationModel` para sonnet e ainda sobram os 26%.
