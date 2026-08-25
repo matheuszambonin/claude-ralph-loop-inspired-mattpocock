@@ -10,7 +10,8 @@ import {
   inContainer,
 } from "./sandbox.mjs";
 import { createStreamRenderer, foundPromise, paint, colors as C } from "./stream.mjs";
-import { userPluginsDir } from "./paths.mjs";
+import { userPluginsDir, userClaudeDir } from "./paths.mjs";
+import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
 import { detect as detectKnowledgeIndex, render as renderKnowledgeIndex, describeMcpFailure } from "./knowledge-index.mjs";
 
@@ -127,10 +128,16 @@ function shq(s) {
   return `'${String(s).replace(/'/g, `'\''`)}'`;
 }
 
-/** Confere se o Claude dentro do sandbox está autenticado. */
-export async function isLoggedIn(name) {
-  const res = await execCapture(name, ["bash", "-lc", "test -s ~/.claude/.credentials.json && echo yes || echo no"]);
-  return res.stdout.includes("yes");
+/**
+ * Confere se o Claude dentro do sandbox está autenticado *e ainda vale*.
+ * Existir o arquivo não basta: a cópia congelada pelo `--share-credentials`
+ * vence sozinha e o refresh dela é rotacionado pelo host (ver credentials.mjs).
+ */
+export async function checkAuth(name) {
+  const res = await execCapture(name, ["bash", "-lc", "cat ~/.claude/.credentials.json 2>/dev/null"]);
+  const hostFile = path.join(userClaudeDir(), ".credentials.json");
+  const host = existsSync(hostFile) ? parseCredentials(readFileSync(hostFile, "utf8")) : null;
+  return credentialVerdict({ sandbox: parseCredentials(res.stdout), host });
 }
 
 /**
@@ -161,6 +168,19 @@ function warnIfIndexMcpFailed(state, cfg, root) {
   const message = describeMcpFailure(detected, state.mcpServers);
   if (!message) return;
   process.stdout.write(paint(C.yellow, `\n  ! ${message}\n`));
+}
+
+/**
+ * A sessão morreu por credencial e não por trabalho. Sem este aviso, a
+ * iteração custa 1 segundo e o usuário vê só "iteração falhou" apontando
+ * para um JSONL de 5 KB — o comando que conserta fica escondido lá dentro.
+ */
+function warnIfAuthFailed(state, cfg) {
+  if (!isAuthFailure(state)) return;
+  process.stdout.write(
+    paint(C.red, `\n  ! o claude do sandbox '${cfg.sandboxName}' não conseguiu autenticar.\n`) +
+      paint(C.dim, `    A credencial de lá dentro venceu. Rode 'ralph login --share-credentials'.\n`)
+  );
 }
 
 function logFile(root, iteration) {
@@ -197,6 +217,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
 
   warnIfSkillMissing(state, cfg);
   warnIfIndexMcpFailed(state, cfg, root);
+  warnIfAuthFailed(state, cfg);
 
   if (code !== 0 && !state.finalResult) {
     process.stderr.write(paint(C.red, `\n  claude saiu com código ${code}\n`));
@@ -228,12 +249,8 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
   if (!bootstrapped) process.stdout.write(paint(C.dim, `  sandbox ${cfg.sandboxName} pronto\n`));
   await ensureSetup(cfg.sandboxName, root, cfg);
 
-  if (!(await isLoggedIn(cfg.sandboxName))) {
-    throw new Error(
-      `o Claude dentro do sandbox '${cfg.sandboxName}' não está autenticado.\n` +
-        `  Rode 'ralph login' e use /login lá dentro (uma vez por sandbox).`
-    );
-  }
+  const auth = await checkAuth(cfg.sandboxName);
+  if (!auth.ok) throw new Error(`sandbox '${cfg.sandboxName}': ${auth.message}`);
   return { branch };
 }
 

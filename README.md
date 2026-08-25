@@ -140,6 +140,13 @@ porque credencial é por sandbox.
 `--share-credentials` deixa o agente capaz de ler seu token de sessão. Use só
 em sandbox de confiança; o `/login` interativo é a opção conservadora.
 
+**A cópia não acompanha o host.** O token copiado vence em horas e o refresh
+dele é rotacionado toda vez que o host renova o dele — quando isso acontece, a
+sessão de dentro do sandbox morre com `OAuth session expired and could not be
+refreshed`. O `ralph doctor` lê a expiração do arquivo e acusa antes de você
+gastar uma iteração; o conserto é rodar `ralph login --share-credentials` de
+novo.
+
 ### Dependências do projeto: `.ralph/setup.sh`
 
 O sandbox nasce com o Claude Code e mais nada — sem pytest, sem node_modules,

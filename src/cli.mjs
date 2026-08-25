@@ -14,7 +14,7 @@ import {
   ensureSandbox,
   mountsFor,
 } from "./sandbox.mjs";
-import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, isLoggedIn } from "./runner.mjs";
+import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
 import {
   detect as detectKnowledgeIndex,
@@ -211,9 +211,8 @@ async function cmdDoctor() {
       : bad(`/${required} indisponível — o plugin '${pluginName}' não carregou no sandbox`);
   }
 
-  (await isLoggedIn(cfg.sandboxName))
-    ? ok("claude autenticado no sandbox")
-    : bad("claude NÃO autenticado no sandbox — rode 'ralph login'");
+  const auth = await checkAuth(cfg.sandboxName);
+  auth.ok ? ok(auth.message) : bad(auth.message);
 
   // Só cobra o gh se o tracker deste repo realmente depende dele.
   const trackerPath = path.join(root, "docs", "agents", "issue-tracker.md");
