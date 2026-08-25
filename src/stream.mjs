@@ -53,7 +53,18 @@ function describeTool(name, input = {}) {
 }
 
 export function createStreamRenderer({ onEvent } = {}) {
-  const state = { text: "", finalResult: null, costUsd: 0, turns: 0, isError: false, sessionId: null, skills: null, mcpServers: null };
+  const state = {
+    text: "",
+    finalResult: null,
+    costUsd: 0,
+    turns: 0,
+    isError: false,
+    sessionId: null,
+    skills: null,
+    mcpServers: null,
+    modelUsage: null,
+    subagentTokens: 0,
+  };
 
   function handle(evt) {
     onEvent?.(evt);
@@ -91,12 +102,15 @@ export function createStreamRenderer({ onEvent } = {}) {
 
       case "user": {
         for (const block of evt.message?.content ?? []) {
-          if (block.type === "tool_result" && block.is_error) {
-            const body = typeof block.content === "string"
-              ? block.content
-              : (block.content ?? []).map((c) => c.text ?? "").join(" ");
+          if (block.type !== "tool_result") continue;
+          const body = typeof block.content === "string"
+            ? block.content
+            : (block.content ?? []).map((c) => c.text ?? "").join(" ");
+          if (block.is_error) {
             process.stdout.write(paint(C.red, `  ✗ ${body.split("\n")[0].slice(0, 160)}\n`));
           }
+          const tokens = parseSubagentTokens(body);
+          if (tokens !== null) state.subagentTokens += tokens;
         }
         break;
       }
@@ -106,10 +120,12 @@ export function createStreamRenderer({ onEvent } = {}) {
         state.costUsd = evt.total_cost_usd ?? 0;
         state.turns = evt.num_turns ?? 0;
         state.isError = evt.is_error === true || evt.subtype !== "success";
+        state.modelUsage = evt.modelUsage ?? null;
         const secs = ((evt.duration_ms ?? 0) / 1000).toFixed(0);
         const cost = state.costUsd ? `$${state.costUsd.toFixed(4)}` : "—";
+        const subagent = state.subagentTokens ? ` · subagentes ${state.subagentTokens} tokens` : "";
         process.stdout.write(
-          paint(C.dim, `\n  ${state.turns} turnos · ${secs}s · ${cost}\n`)
+          paint(C.dim, `\n  ${state.turns} turnos · ${secs}s · ${cost}${subagent}\n`)
         );
         break;
       }
@@ -153,6 +169,49 @@ export function createStreamRenderer({ onEvent } = {}) {
 export function foundPromise(state, promise) {
   const haystack = `${state.text}\n${state.finalResult ?? ""}`;
   return haystack.includes(`<promise>${promise}</promise>`);
+}
+
+/**
+ * O Agent tool devolve `subagent_tokens` num bloco `<usage>` de texto solto
+ * dentro do `tool_result`, não como campo estruturado — não há outro jeito
+ * de ler o que um subagente consumiu.
+ */
+function parseSubagentTokens(text) {
+  const m = /subagent_tokens:\s*(\d+)/.exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+/** O nome canônico carrega versão e data (`claude-haiku-4-5-20251001`); o relatório final só precisa da família. */
+function shortModelName(canonicalModel) {
+  const m = /^claude-([a-z]+)/i.exec(canonicalModel);
+  return m ? m[1].toLowerCase() : canonicalModel;
+}
+
+/**
+ * Pura para ser testável sem Docker (issue #9) — espelha o `cost +=` que
+ * `runLoop` já faz, mas por modelo. `modelUsage` ausente (iteração que não
+ * chegou a reportar custo) devolve `totals` intacto em vez de zerar o loop.
+ */
+export function accumulateModelUsage(totals, modelUsage) {
+  if (!modelUsage) return totals;
+  const next = { ...totals };
+  for (const [model, usage] of Object.entries(modelUsage)) {
+    next[model] = (next[model] ?? 0) + (usage.costUSD ?? 0);
+  }
+  return next;
+}
+
+/**
+ * `$X` com um modelo só — idêntico ao relatório de antes desta feature —
+ * ou `$X (modelo $Y · modelo $Z)` com mais de um. Pura.
+ */
+export function formatCostByModel(totalCost, modelTotals, fallback = "—") {
+  if (!totalCost) return fallback;
+  const cost = `$${totalCost.toFixed(4)}`;
+  const models = Object.keys(modelTotals ?? {});
+  if (models.length <= 1) return cost;
+  const breakdown = models.map((m) => `${shortModelName(m)} $${modelTotals[m].toFixed(4)}`).join(" · ");
+  return `${cost} (${breakdown})`;
 }
 
 export { C as colors, paint };

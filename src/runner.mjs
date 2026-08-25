@@ -9,7 +9,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -265,34 +265,44 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
 
   const started = Date.now();
   let cost = 0;
+  let modelTotals = {};
+  let subagentTokens = 0;
   for (let i = 1; i <= iterations; i++) {
     const result = await runIteration(root, cfg, { iteration: i, total: iterations, prompt, extraArgs });
     cost += result.state.costUsd ?? 0;
+    modelTotals = accumulateModelUsage(modelTotals, result.state.modelUsage);
+    subagentTokens += result.state.subagentTokens ?? 0;
 
     if (result.complete) {
       process.stdout.write(paint(C.green, `\n✓ backlog concluído na iteração ${i}.\n`));
-      return summary(i, cost, started, "complete");
+      return summary(i, cost, modelTotals, subagentTokens, started, "complete");
     }
     if (result.blocked) {
       process.stdout.write(paint(C.yellow, `\n■ Ralph travou na iteração ${i} e pediu um humano.\n`));
-      return summary(i, cost, started, "blocked");
+      return summary(i, cost, modelTotals, subagentTokens, started, "blocked");
     }
     if (result.code !== 0) {
       process.stdout.write(paint(C.red, `\n✗ iteração ${i} falhou. Log: ${path.relative(root, result.logPath)}\n`));
-      return summary(i, cost, started, "error");
+      return summary(i, cost, modelTotals, subagentTokens, started, "error");
     }
     if (cfg.cooldownSeconds > 0 && i < iterations) {
       await new Promise((r) => setTimeout(r, cfg.cooldownSeconds * 1000));
     }
   }
   process.stdout.write(paint(C.yellow, `\n⏱ teto de ${iterations} iterações atingido sem a promise.\n`));
-  return summary(iterations, cost, started, "max-iterations");
+  return summary(iterations, cost, modelTotals, subagentTokens, started, "max-iterations");
 }
 
-function summary(iterations, cost, started, status) {
+/**
+ * `subagentTokens` só aparece na linha quando > 0 — repositório sem
+ * subagente nenhum (a maioria dos logs, hoje) mantém o relatório idêntico
+ * ao de antes da issue #9.
+ */
+function summary(iterations, cost, modelTotals, subagentTokens, started, status) {
   const mins = ((Date.now() - started) / 60000).toFixed(1);
+  const subagent = subagentTokens ? ` · subagentes ${subagentTokens} tokens` : "";
   process.stdout.write(
-    paint(C.dim, `  ${iterations} iterações · ${mins} min · ${cost ? `$${cost.toFixed(4)}` : "custo não reportado"}\n`)
+    paint(C.dim, `  ${iterations} iterações · ${mins} min · ${formatCostByModel(cost, modelTotals, "custo não reportado")}${subagent}\n`)
   );
   return { status, iterations, cost };
 }
