@@ -18,6 +18,8 @@ export const DEFAULTS = {
   maxIterations: 20,
   /** String que o agente emite dentro de <promise>…</promise> para encerrar. */
   completionPromise: "COMPLETE",
+  /** String que o agente emite dentro de <promise>…</promise> quando está bloqueado. */
+  blockedPromise: "BLOCKED",
   /** Prompt do loop, relativo à raiz do repo. */
   promptFile: ".ralph/prompt.md",
   /** Diário do loop, relativo à raiz do repo. */

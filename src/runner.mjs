@@ -33,7 +33,7 @@ export function renderPrompt(template, cfg) {
   return template
     .replaceAll("{{PROGRESS_FILE}}", cfg.progressFile)
     .replaceAll("{{COMPLETION_PROMISE}}", cfg.completionPromise)
-    .replaceAll("{{BLOCKED_PROMISE}}", cfg.blockedPromise ?? "BLOCKED")
+    .replaceAll("{{BLOCKED_PROMISE}}", cfg.blockedPromise)
     .replaceAll("{{FEEDBACK_LOOPS}}", feedbackLoopsBlock(cfg));
 }
 
@@ -269,7 +269,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     state,
     logPath: jsonl,
     complete: foundPromise(state, cfg.completionPromise),
-    blocked: foundPromise(state, cfg.blockedPromise ?? "BLOCKED"),
+    blocked: foundPromise(state, cfg.blockedPromise),
   };
 }
 

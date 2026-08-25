@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildPrompt, renderPrompt } from "../src/runner.mjs";
 import { buildOrientationPrompt } from "../src/orientation.mjs";
+import { DEFAULTS } from "../src/config.mjs";
 
 function tmpRepo(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "ralph-runner-"));
@@ -45,9 +46,10 @@ test("renderPrompt: sem feedbackLoops configurado, cai no fallback de descoberta
   assert.match(result, /Discover this repo's checks/);
 });
 
-test("renderPrompt: blockedPromise ausente usa o padrão BLOCKED", () => {
-  const cfg = baseCfg();
-  delete cfg.blockedPromise;
+test("renderPrompt: config do usuário sem blockedPromise cai no padrão de DEFAULTS", () => {
+  const userCfg = baseCfg();
+  delete userCfg.blockedPromise;
+  const cfg = { ...DEFAULTS, ...userCfg };
   assert.equal(renderPrompt("{{BLOCKED_PROMISE}}", cfg), "BLOCKED");
 });
 

@@ -96,7 +96,6 @@ function cmdInit(flags) {
 
   const cfg = isInitialized(root) && !flags.force ? loadConfig(root) : { ...DEFAULTS };
   cfg.sandboxName ||= sandboxNameFor(root);
-  cfg.blockedPromise ??= "BLOCKED";
   cfg.feedbackLoops ??= detectFeedbackLoops(root);
   saveConfig(root, cfg);
 
