@@ -47,6 +47,22 @@ export function buildOrientationPrompt(root, cfg) {
  * Ollama (issue #7) — nenhuma tool que a sonda derrubou chega aqui. Entram
  * qualificados como `mcp__<server>__<tool>`, a convenção que o `tools:` de um
  * subagente do Claude Code exige para tool de MCP.
+ *
+ * `model:` recebe a tag do Ollama sem apelido nenhum (issue #35: "aceita um
+ * tag arbitrário, ou é preciso um apelido mapeado por ambiente?"). O lado que
+ * dá pra provar sem Ollama de verdade (issue #34/#32: sem ele neste ambiente)
+ * foi provado contra um sandbox de verdade: uma tag inválida em `--agents`
+ * reprova com o mesmo erro de API (`model_not_found`, 404) que `--model <tag>`
+ * já reprova hoje pro processo inteiro (issue #31) — a mesma forma de erro nos
+ * dois casos é o sinal de que `--agents` não valida `model:` contra uma lista
+ * fechada de apelidos do lado do cliente; ele só resolve `sonnet`/`opus`/
+ * `haiku` antes de chamar a API, e deixa qualquer outra string passar direto,
+ * exatamente como já faz para o processo inteiro. Que uma tag *válida* do
+ * Ollama complete a chamada por esse mesmo caminho é inferência a partir desse
+ * sinal, não observação direta — issue #31 já observou isso para o processo
+ * inteiro, não para dentro de um subagente. Sob essa inferência, o desvio por
+ * apelido (`ANTHROPIC_DEFAULT_HAIKU_MODEL` + `model: "haiku"`) que a spec
+ * cogitava não é necessário.
  */
 export function buildOrientationAgent(promptText, cfg, indexTools = []) {
   return {

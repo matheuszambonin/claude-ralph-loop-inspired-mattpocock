@@ -49,6 +49,11 @@ test("buildOrientationAgent: sem orientationModel no config, o padrão é haiku"
   assert.equal(agent.orientation.model, "haiku");
 });
 
+test("buildOrientationAgent: aceita uma tag arbitrária do Ollama, sem apelido (issue #35)", () => {
+  const agent = buildOrientationAgent("prompt de teste", { orientationModel: "qwen3-coder:30b-a3b-q4_K_M" });
+  assert.equal(agent.orientation.model, "qwen3-coder:30b-a3b-q4_K_M");
+});
+
 test("buildOrientationAgent: não expõe Edit nem Write", () => {
   const agent = buildOrientationAgent("prompt de teste", {});
   assert.ok(!agent.orientation.tools.includes("Edit"));
