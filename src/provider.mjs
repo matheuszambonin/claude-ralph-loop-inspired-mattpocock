@@ -1,5 +1,5 @@
 import { translateLoopback } from "./paths.mjs";
-import { tcpReachable } from "./sandbox.mjs";
+import { execCapture } from "./sandbox.mjs";
 
 /**
  * Pura: config e a flag `--night` entram, o Provedor resolvido sai. Espelha
@@ -163,16 +163,37 @@ export async function probe(provider, { fetchImpl = fetch } = {}) {
 }
 
 /**
- * Alcance provado de dentro do sandbox, pelo mesmo teste de TCP (`tcpReachable`,
- * compartilhado com `knowledge-index.probe`) — quem consome o Provedor é o
- * processo `claude` de dentro, e `probe()` acima só prova o alcance a partir
- * do host (issue #32: "os dois têm de passar").
+ * Alcance provado de dentro do sandbox — quem consome o Provedor é o processo
+ * `claude` de dentro, e `probe()` acima só prova o alcance a partir do host
+ * (issue #32: "os dois têm de passar").
+ *
+ * Pedido HTTP com `curl`, o mesmo `/api/tags` que `probe()` faz do host, e não
+ * um socket TCP direto (issue #46): o `docker sandbox` força todo o tráfego
+ * por um proxy MITM em `host.docker.internal:3128` e o único destino que
+ * responde a TCP direto é o próprio proxy — `/dev/tcp` reprovava qualquer
+ * endereço, inclusive um Ollama que o `curl` de dentro alcançava com 200. O
+ * `curl` respeita `HTTP_PROXY`/`HTTPS_PROXY`, então mede o caminho que o
+ * consumidor real percorre. É ele e não o `fetch` do Node (que a sonda de
+ * embeddings usa) porque o `fetch` ignora as duas variáveis e abre socket
+ * direto — medido de dentro do sandbox, falha contra o mesmo endereço que o
+ * `curl` alcança. Nada novo entra no `bootstrap.sh`: a imagem do template já
+ * traz `/usr/bin/curl`.
+ *
+ * Teto de 5s, não os 2s que o `timeout` do TCP dava: o pedido agora atravessa
+ * o proxy antes de chegar ao Provedor — mesmo teto que a sonda de embeddings
+ * já usa (`knowledge-index`). A URL vem do config do operador e vai como
+ * argumento posicional (`$1`), nunca interpolada no script, para que endereço
+ * torto não vire comando dentro do container.
  */
-export async function probeFromSandbox(sandboxName, provider) {
-  const { hostname, port, protocol } = new URL(provider.baseUrl);
-  const resolvedPort = port || (protocol === "https:" ? 443 : 80);
-  const reachable = await tcpReachable(sandboxName, hostname, resolvedPort);
-  return { reachable };
+export async function probeFromSandbox(sandboxName, provider, { execImpl = execCapture } = {}) {
+  const result = await execImpl(sandboxName, [
+    "bash",
+    "-lc",
+    'curl -fsS -o /dev/null --max-time 5 "$1"',
+    "ralph-provider-probe",
+    joinUrl(provider.baseUrl, "/api/tags"),
+  ]);
+  return { reachable: result.code === 0 };
 }
 
 /**
@@ -184,7 +205,10 @@ export async function probeFromSandbox(sandboxName, provider) {
  * divergiu uma vez no code-review desta issue.
  */
 export async function probeBoth(sandboxName, provider, opts = {}) {
-  const [hostProbe, sandboxProbe] = await Promise.all([probe(provider, opts), probeFromSandbox(sandboxName, provider)]);
+  const [hostProbe, sandboxProbe] = await Promise.all([
+    probe(provider, opts),
+    probeFromSandbox(sandboxName, provider, opts),
+  ]);
   return { ...hostProbe, reachable: hostProbe.reachable && sandboxProbe.reachable };
 }
 

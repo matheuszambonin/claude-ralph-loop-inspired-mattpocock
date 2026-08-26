@@ -208,7 +208,7 @@ const EMBEDDING_PROBE_SCRIPT = [
  * busca funciona (ADR-0003).
  *
  * Qualquer falha — rede, timeout, HTTP não-2xx, corpo sem embedding — reprova;
- * a exceção nunca escapa daqui, mesma garantia que `tcpReachable` já dava.
+ * a exceção nunca escapa daqui, e quem chama sempre recebe um booleano.
  */
 async function requestEmbedding(sandboxName, target) {
   const url = `${target.baseUrl.replace(/\/$/, "")}/embeddings`;

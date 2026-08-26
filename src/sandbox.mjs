@@ -96,22 +96,6 @@ export async function removeSandbox(name) {
   await docker(["sandbox", "rm", name]);
 }
 
-/**
- * Teste de TCP puro (`/dev/tcp` do bash) de dentro do sandbox — a mesma
- * técnica que a sonda de Ollama do índice de conhecimento e as três provas do
- * Provedor local (issue #32) precisam, cada uma pro seu host/porta. Um ponto
- * só de verdade pra técnica evita as duas implementações divergirem em como
- * se testa alcance de dentro do container.
- */
-export async function tcpReachable(name, host, port) {
-  const check = await execCapture(name, [
-    "bash",
-    "-lc",
-    `timeout 2 bash -c 'exec 3<>/dev/tcp/${host}/${port}' 2>/dev/null`,
-  ]);
-  return check.code === 0;
-}
-
 /** Executa um comando dentro do sandbox e devolve stdout/stderr capturados. */
 export async function execCapture(name, argv, { workdir, stdin } = {}) {
   const args = ["sandbox", "exec"];

@@ -5,6 +5,8 @@ import {
   renderEnv,
   requiresAnthropicAuth,
   probe,
+  probeFromSandbox,
+  probeBoth,
   preload,
   describeAvailability,
   describeDegradation,
@@ -230,6 +232,70 @@ test("probe: devolve só reachable, toolUse e contextOk — nada da resposta bru
   });
   const result = await probe(fakeProvider(), { fetchImpl });
   assert.deepEqual(Object.keys(result).sort(), ["contextOk", "reachable", "toolUse"]);
+});
+
+// --- alcance provado de dentro do sandbox (issue #46) ---
+
+/** execImpl injetado: guarda o argv recebido e devolve o código pedido. */
+function fakeExec(code = 0) {
+  const calls = [];
+  const execImpl = async (name, argv) => {
+    calls.push({ name, argv });
+    return { code, stdout: "", stderr: "" };
+  };
+  return { calls, execImpl };
+}
+
+test("probeFromSandbox: prova o alcance com um pedido HTTP a /api/tags, não com socket TCP direto", async () => {
+  const { calls, execImpl } = fakeExec(0);
+  await probeFromSandbox("sbx", fakeProvider(), { execImpl });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, "sbx");
+  const argv = calls[0].argv.join(" ");
+  assert.match(argv, /curl/);
+  assert.match(argv, /http:\/\/fake-ollama:11434\/api\/tags/);
+  assert.doesNotMatch(argv, /dev\/tcp/);
+});
+
+test("probeFromSandbox: pedido bem-sucedido aprova o alcance", async () => {
+  const { execImpl } = fakeExec(0);
+  assert.deepEqual(await probeFromSandbox("sbx", fakeProvider(), { execImpl }), { reachable: true });
+});
+
+test("probeFromSandbox: pedido que falha (curl não-zero) reprova o alcance", async () => {
+  const { execImpl } = fakeExec(7);
+  assert.deepEqual(await probeFromSandbox("sbx", fakeProvider(), { execImpl }), { reachable: false });
+});
+
+test("probeFromSandbox: baseUrl do operador vai como argumento, nunca interpolada no script do shell", async () => {
+  const { calls, execImpl } = fakeExec(0);
+  const provider = fakeProvider({ baseUrl: "http://evil:11434/$(touch /tmp/pwned)" });
+  await probeFromSandbox("sbx", provider, { execImpl });
+  const { argv } = calls[0];
+  const script = argv[argv.indexOf("-lc") + 1];
+  assert.doesNotMatch(script, /evil/);
+  assert.doesNotMatch(script, /pwned/);
+  assert.ok(argv.some((a) => a.includes("evil") && a.includes("pwned")));
+});
+
+test("probeBoth: sandbox reprovando derruba o alcance mesmo com o host aprovando", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] },
+    canaryAnswer: "A senha é SENHA_INICIAL",
+  });
+  const { execImpl } = fakeExec(1);
+  const result = await probeBoth("sbx", fakeProvider(), { fetchImpl, execImpl });
+  assert.equal(result.reachable, false);
+});
+
+test("probeBoth: as duas pernas aprovando devolve alcance com as outras provas do host preservadas", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] },
+    canaryAnswer: "A senha é SENHA_INICIAL",
+  });
+  const { execImpl } = fakeExec(0);
+  const result = await probeBoth("sbx", fakeProvider(), { fetchImpl, execImpl });
+  assert.deepEqual(result, { reachable: true, toolUse: true, contextOk: true });
 });
 
 // --- aquecer o modelo antes da iteração 1 (issue #34) ---
