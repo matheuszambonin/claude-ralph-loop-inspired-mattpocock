@@ -348,9 +348,9 @@ async function cmdGhLogin(flags) {
 // ---------------------------------------------------------------- once / afk --
 async function cmdOnce(flags) {
   const cfg = withOverrides(loadConfig(root), flags);
-  await prepare(root, cfg, { allowBranch: !!flags["allow-branch"] });
+  const { provider } = await prepare(root, cfg, { allowBranch: !!flags["allow-branch"] });
   const prompt = buildPrompt(root, cfg);
-  const res = await runIteration(root, cfg, { iteration: 1, total: 1, prompt, extraArgs: flags._passthrough ?? [] });
+  const res = await runIteration(root, cfg, { iteration: 1, total: 1, prompt, extraArgs: flags._passthrough ?? [], provider });
   if (res.complete) process.stdout.write(paint(C.green, "\n✓ backlog concluído.\n"));
   else if (res.blocked) process.stdout.write(paint(C.yellow, "\n■ Ralph pediu um humano.\n"));
   process.exit(res.code === 0 ? 0 : 1);
@@ -368,8 +368,20 @@ async function cmdAfk(flags) {
   process.exit(res.status === "error" ? 1 : 0);
 }
 
+/**
+ * `--night` e `--model` entram pela mesma costura (ADR-0006) — a mesma linha
+ * de comando produz sempre o mesmo Provedor, nunca o relógio. Com `--night`,
+ * `--model` sobrescreve `nightProvider.model` em vez de `cfg.model`: é
+ * `provider.resolve` (src/provider.mjs) quem lê esse campo quando a flag está
+ * ligada, e sem isso a tag do operador cairia num campo que o Provedor local
+ * ignora.
+ */
 function withOverrides(cfg, flags) {
-  if (flags.model) cfg.model = flags.model;
+  if (flags.night) cfg.night = true;
+  if (flags.model) {
+    if (cfg.night) cfg.nightProvider = { ...(cfg.nightProvider ?? {}), model: flags.model };
+    else cfg.model = flags.model;
+  }
   if (flags.prompt) cfg.promptFile = flags.prompt;
   return cfg;
 }
@@ -450,8 +462,9 @@ ${paint(C.bold, "Comandos")}
   rm                                 remove o sandbox deste repo
 
 ${paint(C.bold, "Opções comuns")}
-  --model <nome>     sobrepõe o modelo da iteração (padrão: ${DEFAULTS.model})
+  --model <nome>     sobrepõe o modelo da iteração (padrão: ${DEFAULTS.model}; com --night, a tag do nightProvider)
   --prompt <arquivo> usa outro prompt de loop
+  --night            roda contra o Provedor local (nightProvider no config) em vez da API paga
   -- <args>          repassa argumentos crus ao claude
 
 ${paint(C.bold, "Fluxo típico")}

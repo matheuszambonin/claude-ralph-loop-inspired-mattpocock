@@ -144,8 +144,14 @@ export function runAgentInteractive(name, agentArgs = []) {
  * Executa `claude -p` dentro do sandbox emitindo stream-json, entregando cada
  * pedaço bruto ao renderizador. É o `docker sandbox run … --output-format
  * stream-json | jq` dos artigos, sem o jq.
+ *
+ * `env` (night mode, issue #31) prefixa o comando com `env K=V …`, mesmo
+ * padrão que `ensureBootstrap` já usa em `execCapture` — a variável vale só
+ * para este processo `claude`, nunca vaza para outro comando do sandbox.
+ * Ausente ou vazio (o caso de hoje, Provedor `anthropic`): nenhum prefixo
+ * entra nos args, e a invocação sai idêntica à de antes desta issue.
  */
-export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [], onChunk }) {
+export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [], env = {}, onChunk }) {
   const claudeArgs = [
     "claude",
     "--print",
@@ -156,7 +162,8 @@ export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [
     ...extraArgs,
     prompt,
   ];
-  const args = ["sandbox", "exec", "-w", workdir, name, ...claudeArgs];
+  const envArgs = Object.entries(env).map(([k, v]) => `${k}=${v}`);
+  const args = ["sandbox", "exec", "-w", workdir, name, ...(envArgs.length ? ["env", ...envArgs] : []), ...claudeArgs];
 
   return new Promise((resolve, reject) => {
     const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });

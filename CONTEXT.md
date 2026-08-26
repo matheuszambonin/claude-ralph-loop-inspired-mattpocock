@@ -52,3 +52,18 @@ _Avoid_: exploração, varredura, reconhecimento, scout
 O que sobrevive à Orientação e entra no contexto da iteração. Tudo o que foi
 lido para produzi-lo morre junto com quem o produziu.
 _Avoid_: briefing, contexto, relatório
+
+**Provedor**:
+De onde vem a inferência de uma iteração. Não se confunde com **Backend**, que
+é implementação de índice de conhecimento: um responde "quem pensa", o outro
+"onde está X". Vale para a iteração inteira, não por fase — a Orientação roda
+como subagente do mesmo processo, e a base URL é do processo. O que cada fase
+escolhe dentro do Provedor é o modelo.
+_Avoid_: backend, motor, engine, modelo
+
+**Night mode**:
+O modo em que as fases da iteração rodam num Provedor local, escolhido por
+flag explícita e nunca pelo relógio. Existe para gastar tempo de máquina
+ociosa em vez de token pago — não para sigilo, e não para velocidade.
+Ortogonal ao AFK: uma iteração pode ser assistida e ainda assim noturna.
+_Avoid_: modo offline, modo local, modo barato

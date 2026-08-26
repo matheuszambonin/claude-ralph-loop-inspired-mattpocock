@@ -23,6 +23,7 @@ import {
   resolveEmbeddingEnv,
 } from "./knowledge-index.mjs";
 import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
+import { resolve as resolveProvider, renderEnv as renderProviderEnv, requiresAnthropicAuth } from "./provider.mjs";
 
 function feedbackLoopsBlock(cfg) {
   return (cfg.feedbackLoops ?? []).length
@@ -212,14 +213,14 @@ function logFile(root, iteration) {
  * Uma iteração: contexto novo, um ticket, sai. É a propriedade que faz Ralph
  * funcionar — nada de reaproveitar sessão entre iterações.
  */
-export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt, extraArgs = [] }) {
+export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt, extraArgs = [], provider }) {
   const workdir = inContainer(root);
   const jsonl = logFile(root, iteration);
   const renderer = createStreamRenderer({
     onEvent: (evt) => appendFileSync(jsonl, JSON.stringify(evt) + "\n", "utf8"),
   });
 
-  const header = `iteração ${iteration}/${total}`;
+  const header = `iteração ${iteration}/${total}${provider.kind === "local" ? ` · Provedor local (${provider.model})` : ""}`;
   process.stdout.write(
     `\n${paint(C.magenta, "━".repeat(8))} ${paint(C.bold, header)} ${paint(C.dim, new Date().toLocaleTimeString())} ${paint(C.magenta, "━".repeat(8))}\n`
   );
@@ -247,11 +248,17 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   // vez só): o índice de conhecimento do repo alvo pode aparecer entre
   // iterações (ex.: outra ferramenta rodando em paralelo o gera), e o custo
   // de refazer é um `readFileSync` e um `readdirSync` — não vale cachear.
-  const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), cfg, tools);
+  // Orientação herda o modelo do Provedor resolvido, não `cfg.orientationModel`
+  // puro: no Provedor local os dois campos moram em `cfg.nightProvider`
+  // (ADR-0007, "um Provedor por processo, dois modelos possíveis dentro
+  // dele"). Sem `--night`, `provider.orientationModel` é `cfg.orientationModel`
+  // sem mudança nenhuma.
+  const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), { ...cfg, orientationModel: provider.orientationModel }, tools);
   const { code, stderr } = await runClaudeStreaming(cfg.sandboxName, {
     workdir,
     prompt,
-    model: cfg.model,
+    model: provider.model,
+    env: renderProviderEnv(provider),
     extraArgs: [...extraArgs, ...mcpArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
@@ -291,60 +298,76 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
   if (!bootstrapped) process.stdout.write(paint(C.dim, `  sandbox ${cfg.sandboxName} pronto\n`));
   await ensureSetup(cfg.sandboxName, root, cfg);
 
-  const auth = await checkAuth(cfg.sandboxName);
-  if (!auth.ok) throw new Error(`sandbox '${cfg.sandboxName}': ${auth.message}`);
-  return { branch };
+  // Sem fallback pro Claude pago, não há por que exigir a credencial dele
+  // (ADR-0007) — `ralph afk --night` roda num sandbox que nunca viu `/login`.
+  const provider = resolveProvider(cfg, { night: !!cfg.night });
+  if (requiresAnthropicAuth(provider)) {
+    const auth = await checkAuth(cfg.sandboxName);
+    if (!auth.ok) throw new Error(`sandbox '${cfg.sandboxName}': ${auth.message}`);
+  }
+  return { branch, provider };
 }
 
 /** Loop AFK: N iterações de contexto novo até a promise ou o teto. */
 export async function runLoop(root, cfg, { iterations, allowBranch = false, extraArgs = [] }) {
-  const { branch } = await prepare(root, cfg, { allowBranch });
+  const { branch, provider } = await prepare(root, cfg, { allowBranch });
   const prompt = buildPrompt(root, cfg);
 
+  // `modelo ${provider.model}` sai idêntico a `modelo ${cfg.model}` de antes
+  // desta issue quando o Provedor é anthropic — só o sufixo é novo, e só
+  // aparece com `--night`.
+  const providerSuffix = provider.kind === "local" ? " · Provedor local" : "";
   process.stdout.write(
-    `\n${paint(C.bold, "Ralph")} ${paint(C.dim, `· ${path.basename(root)} · branch ${branch ?? "—"} · modelo ${cfg.model} · até ${iterations} iterações`)}\n`
+    `\n${paint(C.bold, "Ralph")} ${paint(C.dim, `· ${path.basename(root)} · branch ${branch ?? "—"} · modelo ${provider.model}${providerSuffix} · até ${iterations} iterações`)}\n`
   );
+
+  // Provedor local não reporta `total_cost_usd` — "sem custo" e "custo não
+  // reportado" significam coisas opostas para quem lê o resumo depois
+  // (ADR-0008), então o fallback muda com o Provedor, não só o texto do
+  // cabeçalho.
+  const costFallback = provider.kind === "local" ? `sem custo — Provedor local (${provider.model})` : "custo não reportado";
 
   const started = Date.now();
   let cost = 0;
   let modelTotals = {};
   let subagentTokens = 0;
   for (let i = 1; i <= iterations; i++) {
-    const result = await runIteration(root, cfg, { iteration: i, total: iterations, prompt, extraArgs });
+    const result = await runIteration(root, cfg, { iteration: i, total: iterations, prompt, extraArgs, provider });
     cost += result.state.costUsd ?? 0;
     modelTotals = accumulateModelUsage(modelTotals, result.state.modelUsage);
     subagentTokens += result.state.subagentTokens ?? 0;
 
     if (result.complete) {
       process.stdout.write(paint(C.green, `\n✓ backlog concluído na iteração ${i}.\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "complete");
+      return summary(i, cost, modelTotals, subagentTokens, started, "complete", costFallback);
     }
     if (result.blocked) {
       process.stdout.write(paint(C.yellow, `\n■ Ralph travou na iteração ${i} e pediu um humano.\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "blocked");
+      return summary(i, cost, modelTotals, subagentTokens, started, "blocked", costFallback);
     }
     if (result.code !== 0) {
       process.stdout.write(paint(C.red, `\n✗ iteração ${i} falhou. Log: ${path.relative(root, result.logPath)}\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "error");
+      return summary(i, cost, modelTotals, subagentTokens, started, "error", costFallback);
     }
     if (cfg.cooldownSeconds > 0 && i < iterations) {
       await new Promise((r) => setTimeout(r, cfg.cooldownSeconds * 1000));
     }
   }
   process.stdout.write(paint(C.yellow, `\n⏱ teto de ${iterations} iterações atingido sem a promise.\n`));
-  return summary(iterations, cost, modelTotals, subagentTokens, started, "max-iterations");
+  return summary(iterations, cost, modelTotals, subagentTokens, started, "max-iterations", costFallback);
 }
 
 /**
  * `subagentTokens` só aparece na linha quando > 0 — repositório sem
  * subagente nenhum (a maioria dos logs, hoje) mantém o relatório idêntico
- * ao de antes da issue #9.
+ * ao de antes da issue #9. `costFallback` (issue #31) é "custo não
+ * reportado" por padrão — o texto de sempre para quem não passa `--night`.
  */
-function summary(iterations, cost, modelTotals, subagentTokens, started, status) {
+function summary(iterations, cost, modelTotals, subagentTokens, started, status, costFallback = "custo não reportado") {
   const mins = ((Date.now() - started) / 60000).toFixed(1);
   const subagent = subagentTokens ? ` · subagentes ${subagentTokens} tokens` : "";
   process.stdout.write(
-    paint(C.dim, `  ${iterations} iterações · ${mins} min · ${formatCostByModel(cost, modelTotals, "custo não reportado")}${subagent}\n`)
+    paint(C.dim, `  ${iterations} iterações · ${mins} min · ${formatCostByModel(cost, modelTotals, costFallback)}${subagent}\n`)
   );
   return { status, iterations, cost };
 }
