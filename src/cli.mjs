@@ -28,6 +28,12 @@ import {
   withInstallBlock,
 } from "./knowledge-index.mjs";
 import { checkOrientationContract, readOrientationTemplate } from "./orientation.mjs";
+import {
+  resolve as resolveProvider,
+  describeAvailability as describeProviderAvailability,
+  describeDegradation as describeProviderDegradation,
+  probeBoth as probeProviderBoth,
+} from "./provider.mjs";
 
 const root = repoRoot();
 
@@ -218,6 +224,17 @@ async function cmdDoctor() {
     const probed = await probeKnowledgeIndex(cfg.sandboxName);
     const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
     degradation ? warn(degradation) : ok(describeKnowledgeIndexAvailability(detectedIndexes));
+  }
+
+  // Night mode (issue #33): sem nightProvider no config, nenhuma linha nova
+  // e nenhuma chamada de rede — o operador que não configurou não paga por
+  // isso. Mesmas três provas que `prepare()` roda antes da iteração 1
+  // (issue #32), só que aqui em segundos, antes do loop existir.
+  if (cfg.nightProvider != null) {
+    const provider = resolveProvider(cfg, { night: true });
+    const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
+    const degradation = describeProviderDegradation(probeResult);
+    degradation ? warn(degradation) : ok(describeProviderAvailability(provider));
   }
 
   // Só o code-review-graph precisa de binário no sandbox, mesma guarda de

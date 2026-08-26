@@ -174,6 +174,30 @@ export async function probeFromSandbox(sandboxName, provider) {
 }
 
 /**
+ * As duas provas de alcance combinadas num resultado só (issue #29: "os dois
+ * têm de passar") — o host, que roda `tool_use` e o canário, e o sandbox, que
+ * é quem de fato consome o Provedor durante a iteração. Ponto único de
+ * verdade: `prepare()` (antes da iteração 1) e `ralph doctor` (issue #33)
+ * precisavam exatamente da mesma combinação, e tê-la em dois lugares já
+ * divergiu uma vez no code-review desta issue.
+ */
+export async function probeBoth(sandboxName, provider, opts = {}) {
+  const [hostProbe, sandboxProbe] = await Promise.all([probe(provider, opts), probeFromSandbox(sandboxName, provider)]);
+  return { ...hostProbe, reachable: hostProbe.reachable && sandboxProbe.reachable };
+}
+
+/**
+ * Linha verde do `doctor` quando o Provedor local passa nas três provas
+ * (issue #33). Fala do Provedor — o conceito do glossário —, não do Ollama;
+ * o modelo é nomeado porque trocar `nightProvider.model` é a ação que o
+ * operador tem disponível (a mesma correção que a issue #13 fez para a busca
+ * semântica: nomear o processo só onde isso é acionável).
+ */
+export function describeAvailability(provider) {
+  return `Provedor local disponível (modelo ${provider.model})`;
+}
+
+/**
  * Prosa pro comando que conserta cada uma das três reprovações (CLAUDE.md:
  * "erro de usuário diz o comando que conserta"). Ordem importa: inalcançável
  * já reprova as outras duas em `probe()`, então checar alcance primeiro nunca

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolve, renderEnv, requiresAnthropicAuth, probe, describeDegradation, DEFAULT_NIGHT_PROVIDER } from "../src/provider.mjs";
+import { resolve, renderEnv, requiresAnthropicAuth, probe, describeAvailability, describeDegradation, DEFAULT_NIGHT_PROVIDER } from "../src/provider.mjs";
 
 function baseCfg(overrides = {}) {
   return { model: "sonnet", orientationModel: "haiku", ...overrides };
@@ -133,6 +133,13 @@ test("probe: porta fechada (fetchImpl lança) devolve reachable false sem propag
   };
   const result = await probe(fakeProvider(), { fetchImpl });
   assert.deepEqual(result, { reachable: false, toolUse: false, contextOk: false, answered: null });
+});
+
+test("describeAvailability: nomeia o Provedor local e o modelo, não o Ollama", () => {
+  const msg = describeAvailability(resolve({ nightProvider: { model: "qwen3-coder:30b" } }, { night: true }));
+  assert.match(msg, /Provedor local/);
+  assert.match(msg, /qwen3-coder:30b/);
+  assert.doesNotMatch(msg, /Ollama/i);
 });
 
 test("describeDegradation: sonda aprovada em tudo devolve null", () => {

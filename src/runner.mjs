@@ -27,8 +27,7 @@ import {
   resolve as resolveProvider,
   renderEnv as renderProviderEnv,
   requiresAnthropicAuth,
-  probe as probeProvider,
-  probeFromSandbox as probeProviderFromSandbox,
+  probeBoth as probeProviderBoth,
   describeDegradation as describeProviderDegradation,
 } from "./provider.mjs";
 
@@ -314,14 +313,8 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
   } else {
     // As três provas do Provedor (issue #32): falha alta antes da iteração 1,
     // nunca um fallback silencioso pro Claude pago — o operador está dormindo
-    // e não veria o aviso a tempo. Alcance prova dos dois lados (issue #29,
-    // "os dois têm de passar"): o host, que roda `tool_use` e o canário, e o
-    // sandbox, que é quem de fato consome o Provedor durante a iteração.
-    const [hostProbe, sandboxProbe] = await Promise.all([
-      probeProvider(provider),
-      probeProviderFromSandbox(cfg.sandboxName, provider),
-    ]);
-    const probeResult = { ...hostProbe, reachable: hostProbe.reachable && sandboxProbe.reachable };
+    // e não veria o aviso a tempo.
+    const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
     const failure = describeProviderDegradation(probeResult);
     if (failure) throw new Error(failure);
   }
