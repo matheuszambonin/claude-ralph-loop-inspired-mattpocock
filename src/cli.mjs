@@ -22,9 +22,11 @@ import {
   describeAvailability as describeKnowledgeIndexAvailability,
   describeDegradation as describeKnowledgeIndexDegradation,
   describeInstallFailure as describeKnowledgeIndexInstallFailure,
-  needsOllamaProbe,
+  needsEmbeddingProbe,
   probe as probeKnowledgeIndex,
   probeInstall as probeKnowledgeIndexInstall,
+  readTargetMcpConfig,
+  resolveEmbeddingEnv,
   withInstallBlock,
 } from "./knowledge-index.mjs";
 import { checkOrientationContract, readOrientationTemplate } from "./orientation.mjs";
@@ -218,10 +220,11 @@ async function cmdDoctor() {
   }
   ok(`sandbox '${cfg.sandboxName}' existe`);
 
-  // A sonda de Ollama só faz sentido com sandbox de pé — sem isso não há onde
-  // rodar o teste de TCP. Repositório sem code-review-graph nunca chega aqui.
-  if (needsOllamaProbe(detectedIndexes)) {
-    const probed = await probeKnowledgeIndex(cfg.sandboxName);
+  // A sonda de embeddings só faz sentido com sandbox de pé — sem isso não há
+  // onde rodar o pedido real. Repositório sem code-review-graph nunca chega aqui.
+  if (needsEmbeddingProbe(detectedIndexes)) {
+    const embeddingEnv = resolveEmbeddingEnv(readTargetMcpConfig(root), cfg.crgEmbeddingEnv);
+    const probed = await probeKnowledgeIndex(cfg.sandboxName, embeddingEnv);
     const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
     degradation ? warn(degradation) : ok(describeKnowledgeIndexAvailability(detectedIndexes));
   }
@@ -238,7 +241,7 @@ async function cmdDoctor() {
   }
 
   // Só o code-review-graph precisa de binário no sandbox, mesma guarda de
-  // `needsOllamaProbe` só que aplicada dentro de `probeInstall` (issue #12) —
+  // `needsEmbeddingProbe` só que aplicada dentro de `probeInstall` (issue #12) —
   // é a checagem que dá ao aviso de MCP-falho da iteração algo de verdade
   // para diagnosticar.
   const installProbe = await probeKnowledgeIndexInstall(cfg.sandboxName, detectedIndexes);

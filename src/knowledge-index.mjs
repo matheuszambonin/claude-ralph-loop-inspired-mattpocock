@@ -1,13 +1,17 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { execCapture, tcpReachable } from "./sandbox.mjs";
+import { execCapture } from "./sandbox.mjs";
 import { dockerHostAddress, translateLoopback } from "./paths.mjs";
 
 // Carimbo por sandbox, mesmo padrão do `.ralph-bootstrap` em runner.mjs: um
 // arquivo dentro do próprio sandbox, checado antes de repetir o trabalho.
 // Aqui o conteúdo importa (não só a existência), porque o que se carimba é o
-// resultado da sonda, não so o fato de ter rodado.
-const OLLAMA_PROBE_STAMP = "/home/agent/.claude/.ralph-ollama-probe";
+// resultado da sonda, não so o fato de ter rodado. Não guarda a identidade do
+// que foi sondado (endereço, modelo) — trocar o provedor declarado não
+// invalida o carimbo até o sandbox ser recriado; issue #21 resolve isso.
+const EMBEDDING_PROBE_STAMP = "/home/agent/.claude/.ralph-embedding-probe";
+// Fallback quando o operador não declara CRG_OPENAI_BASE_URL — o mesmo
+// endereço que a sonda usava sozinha antes da issue #19.
 const OLLAMA_PORT = 11434;
 
 /**
@@ -145,27 +149,100 @@ export function detect(root, cfg = {}) {
 }
 
 /**
- * Pergunta, de dentro do sandbox, se o Ollama do host responde na porta de
- * embeddings. Carimbado por sandbox (ver `OLLAMA_PROBE_STAMP`) para não
- * repetir a sonda a cada iteração — o sandbox precisa ser recriado para que a
- * sonda rode de novo, mesmo padrão de invalidação do `.ralph-bootstrap`.
+ * Provedor de embeddings que a sonda mira (issue #19) — pura, mesma leitura
+ * de `embeddingEnv` que `mcpServerFor` usa para o env do MCP, mas sem
+ * precisar de `containerRoot`. `CRG_OPENAI_BASE_URL` declarado (no `.mcp.json`
+ * do alvo ou em `crgEmbeddingEnv` — `resolveEmbeddingEnv` já mesclou os dois)
+ * vence; sem ele, o Ollama do host é o fallback, o mesmo endereço que a sonda
+ * usava sozinha antes desta issue.
  *
- * Teste de TCP puro (`/dev/tcp` do bash), não HTTP: o que importa aqui é se a
- * porta abre, que é exatamente o que falha no caso medido (Ollama escutando
- * só em loopback) sem exigir `curl` dentro do sandbox.
+ * Sem `CRG_OPENAI_MODEL` declarado em lugar nenhum não há o que provar —
+ * `null`, a mesma regra que o ADR-0003 já aplica quando a sonda não responde:
+ * ausência de dado não vira suposição de que "funciona".
  */
-export async function probe(sandboxName) {
-  const cached = await execCapture(sandboxName, ["cat", OLLAMA_PROBE_STAMP]);
+export function embeddingTarget(embeddingEnv = {}) {
+  const model = embeddingEnv.CRG_OPENAI_MODEL;
+  if (!model) return null;
+  const declared = embeddingEnv.CRG_OPENAI_BASE_URL;
+  return {
+    baseUrl: declared ? translateLoopback(declared) : `http://${dockerHostAddress()}:${OLLAMA_PORT}/v1`,
+    model,
+    apiKey: embeddingEnv.CRG_OPENAI_API_KEY ?? "",
+    isOllama: !declared,
+  };
+}
+
+// Lido via stdin pelo script abaixo, nunca interpolado no argv do `node -e`
+// — mesma convenção que `cmdGhLogin`/`cmdLogin` já seguem em cli.mjs para não
+// deixar segredo em texto claro no argv do processo (`docker top`, `ps aux`,
+// `/proc/<pid>/cmdline` dentro do sandbox enxergariam).
+const EMBEDDING_PROBE_SCRIPT = [
+  "let input = '';",
+  "process.stdin.on('data', (d) => (input += d));",
+  "process.stdin.on('end', async () => {",
+  "  const { url, model, apiKey } = JSON.parse(input);",
+  "  const headers = { 'content-type': 'application/json' };",
+  "  if (apiKey) headers.authorization = 'Bearer ' + apiKey;",
+  "  try {",
+  "    const res = await fetch(url, {",
+  "      method: 'POST',",
+  "      signal: AbortSignal.timeout(5000),",
+  "      headers,",
+  "      body: JSON.stringify({ model, input: 'ralph-probe' }),",
+  "    });",
+  "    if (!res.ok) { process.stdout.write('no'); return; }",
+  "    const body = await res.json();",
+  "    const embedding = body?.data?.[0]?.embedding;",
+  "    process.stdout.write(Array.isArray(embedding) && embedding.length > 0 ? 'yes' : 'no');",
+  "  } catch { process.stdout.write('no'); }",
+  "});",
+].join("\n");
+
+/**
+ * Pedido de embedding de verdade, de dentro do sandbox (issue #19) — é quem
+ * de fato consulta o provedor durante a iteração, com o `fetch` nativo do
+ * Node via `node -e` (mesma técnica de script inline que `bootstrap.sh` já
+ * usa, zero dependência nova). Substitui o teste de porta puro: TCP aberto
+ * não prova que o provedor responde — um Ollama vivo sem o modelo baixado, ou
+ * um provedor remoto com chave inválida, abrem a porta e mentiriam que a
+ * busca funciona (ADR-0003).
+ *
+ * Qualquer falha — rede, timeout, HTTP não-2xx, corpo sem embedding — reprova;
+ * a exceção nunca escapa daqui, mesma garantia que `tcpReachable` já dava.
+ */
+async function requestEmbedding(sandboxName, target) {
+  const url = `${target.baseUrl.replace(/\/$/, "")}/embeddings`;
+  const result = await execCapture(sandboxName, ["node", "-e", EMBEDDING_PROBE_SCRIPT], {
+    stdin: JSON.stringify({ url, model: target.model, apiKey: target.apiKey }),
+  });
+  return result.stdout.trim() === "yes";
+}
+
+/**
+ * Prova, de dentro do sandbox, que o provedor de embeddings declarado
+ * responde de verdade (issue #19). Carimbado por sandbox (ver
+ * `EMBEDDING_PROBE_STAMP`) para não repetir a prova a cada iteração — o
+ * sandbox precisa ser recriado para a sonda rodar de novo, mesmo padrão de
+ * invalidação do `.ralph-bootstrap`.
+ *
+ * `embeddingTarget` ausente (sem `CRG_OPENAI_MODEL` declarado em lugar
+ * nenhum) devolve reprovado sem tocar sandbox nem carimbo — não há o que
+ * provar.
+ */
+export async function probe(sandboxName, embeddingEnv = {}) {
+  const target = embeddingTarget(embeddingEnv);
+  if (!target) return { reachable: false, address: null, isOllama: false };
+
+  const cached = await execCapture(sandboxName, ["cat", EMBEDDING_PROBE_STAMP]);
   const value = cached.stdout.trim();
   if (cached.code === 0 && (value === "reachable" || value === "unreachable")) {
-    return { ollamaReachable: value === "reachable" };
+    return { reachable: value === "reachable", address: target.baseUrl, isOllama: target.isOllama };
   }
 
-  const ollamaReachable = await tcpReachable(sandboxName, dockerHostAddress(), OLLAMA_PORT);
+  const reachable = await requestEmbedding(sandboxName, target);
+  await execCapture(sandboxName, ["bash", "-lc", `echo ${reachable ? "reachable" : "unreachable"} > ${EMBEDDING_PROBE_STAMP}`]);
 
-  await execCapture(sandboxName, ["bash", "-lc", `echo ${ollamaReachable ? "reachable" : "unreachable"} > ${OLLAMA_PROBE_STAMP}`]);
-
-  return { ollamaReachable };
+  return { reachable, address: target.baseUrl, isOllama: target.isOllama };
 }
 
 /**
@@ -253,8 +330,9 @@ function costPriorityLine(detected) {
  * caminho de host quebraria dentro do sandbox (ADR-0002).
  *
  * `probeResult` ausente (repositório sem sandbox ainda sondado) degrada como
- * se o Ollama estivesse inalcançável — ADR-0003: uma tool ausente é melhor
- * que uma tool que mente, e assumir "alcançável" sem prova seria a mentira.
+ * se o provedor de embeddings estivesse inalcançável — ADR-0003: uma tool
+ * ausente é melhor que uma tool que mente, e assumir "alcançável" sem prova
+ * seria a mentira.
  */
 export function render(detected, probeResult, opts = {}) {
   if (!detected.length) return { promptBlock: "", mcpConfig: null, tools: [] };
@@ -267,11 +345,11 @@ export function render(detected, probeResult, opts = {}) {
     "\n" +
     (detected.length > 1 ? costPriorityLine(detected) + "\n" : "");
 
-  const ollamaReachable = probeResult?.ollamaReachable ?? false;
+  const embeddingReachable = probeResult?.reachable ?? false;
   const tools = [];
   for (const b of detected) {
     if (b.id !== CRG_ID) continue;
-    tools.push(...(ollamaReachable ? CRG_TOOLS : CRG_TOOLS.filter((t) => t !== CRG_EMBEDDING_TOOL)));
+    tools.push(...(embeddingReachable ? CRG_TOOLS : CRG_TOOLS.filter((t) => t !== CRG_EMBEDDING_TOOL)));
   }
 
   const mcpServers = {};
@@ -383,13 +461,13 @@ export function describe(detected) {
   return detected.map((b) => `índice ${b.label} detectado em ${b.path} (atualizado ${relativeAge(b.updatedAt)})`);
 }
 
-/** Se algum detectado é o `code-review-graph` — o único backend que sobe MCP e por isso o único que precisa de sonda (Ollama) ou de binário no sandbox. */
+/** Se algum detectado é o `code-review-graph` — o único backend que sobe MCP e por isso o único que precisa de sonda (embeddings) ou de binário no sandbox. */
 function hasCrgBackend(detected) {
   return detected.some((b) => b.id === CRG_ID);
 }
 
-/** Se algum detectado precisa da sonda de Ollama — hoje só o `code-review-graph`. */
-export function needsOllamaProbe(detected) {
+/** Se algum detectado precisa da sonda de embeddings — hoje só o `code-review-graph`. */
+export function needsEmbeddingProbe(detected) {
   return hasCrgBackend(detected);
 }
 
@@ -467,15 +545,35 @@ export function describeAvailability(detected) {
 
 /**
  * Linha de aviso amarela para o `doctor` quando a busca semântica degradou —
- * `null` quando não há `code-review-graph` detectado ou quando o Ollama
- * respondeu. Erro de usuário diz o comando que conserta (CLAUDE.md).
+ * `null` quando não há `code-review-graph` detectado ou quando o provedor de
+ * embeddings respondeu. Erro de usuário diz o comando que conserta (CLAUDE.md).
+ *
+ * Nomeia o endereço que foi de fato sondado (issue #19) — não sempre o Ollama,
+ * já que a sonda agora mira o provedor declarado (`CRG_OPENAI_BASE_URL`). O
+ * conselho `OLLAMA_HOST=0.0.0.0` só aparece quando o provedor sondado é
+ * mesmo o Ollama (`probeResult.isOllama`); provedor remoto reprovado aponta
+ * pra conferir a configuração declarada, não pro Ollama do host.
  */
 export function describeDegradation(detected, probeResult) {
-  if (!needsOllamaProbe(detected)) return null;
-  if (probeResult?.ollamaReachable) return null;
+  if (!needsEmbeddingProbe(detected)) return null;
+  if (probeResult?.reachable) return null;
+  if (!probeResult?.address) {
+    // `address` ausente cobre dois casos que esta função não distingue (não
+    // recebe `embeddingEnv` pra saber qual): `embeddingTarget` devolveu `null`
+    // porque nenhum CRG_OPENAI_MODEL foi declarado, ou a sonda simplesmente
+    // ainda não rodou (`probeResult` nulo/indefinido). A frase não afirma
+    // qual dos dois é — afirmar a causa errada seria pior que ser genérico.
+    return (
+      "busca semântica do code-review-graph indisponível: nenhum endereço sondado — " +
+      "CRG_OPENAI_MODEL pode não estar declarado (nem no .mcp.json do alvo, nem em crgEmbeddingEnv), " +
+      "ou a sonda ainda não rodou. As outras nove tools do índice continuam funcionando."
+    );
+  }
+  const fix = probeResult.isOllama
+    ? "rode o Ollama do host com OLLAMA_HOST=0.0.0.0, confirme que o modelo declarado está baixado e reinicie o serviço."
+    : "confira o endereço, a chave e o modelo declarados em CRG_OPENAI_* (via .mcp.json do alvo ou crgEmbeddingEnv).";
   return (
-    "busca semântica do code-review-graph indisponível: Ollama do host inalcançável a partir do sandbox " +
-    `(${dockerHostAddress()}:${OLLAMA_PORT}). As outras nove tools do índice continuam funcionando. ` +
-    "Para religar: rode o Ollama do host com OLLAMA_HOST=0.0.0.0 e reinicie o serviço."
+    `busca semântica do code-review-graph indisponível: pedido de embedding contra ${probeResult.address} falhou. ` +
+    `As outras nove tools do índice continuam funcionando. Para religar: ${fix}`
   );
 }

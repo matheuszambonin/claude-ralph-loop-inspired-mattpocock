@@ -14,6 +14,7 @@ import {
   withInstallBlock,
   readTargetMcpConfig,
   resolveEmbeddingEnv,
+  embeddingTarget,
   CRG_ID,
 } from "../src/knowledge-index.mjs";
 
@@ -88,12 +89,12 @@ test("render: sem backend devolve bloco de prompt vazio e nenhuma configuração
 });
 
 test("render: sem containerRoot, nenhum mcpConfig — não há --repo para montar", () => {
-  const { mcpConfig } = render(withCodeReviewGraphDetected(), { ollamaReachable: true });
+  const { mcpConfig } = render(withCodeReviewGraphDetected(), { reachable: true });
   assert.equal(mcpConfig, null);
 });
 
 test("render: com containerRoot, monta o comando `serve` do code-review-graph com --repo e --tools", () => {
-  const { mcpConfig } = render(withCodeReviewGraphDetected(), { ollamaReachable: true }, { containerRoot: "/repo" });
+  const { mcpConfig } = render(withCodeReviewGraphDetected(), { reachable: true }, { containerRoot: "/repo" });
   assert.deepEqual(mcpConfig.mcpServers[CRG_ID].command, CRG_ID);
   assert.deepEqual(mcpConfig.mcpServers[CRG_ID].args.slice(0, 3), ["serve", "--repo", "/repo"]);
   assert.equal(mcpConfig.mcpServers[CRG_ID].args[3], "--tools");
@@ -101,7 +102,7 @@ test("render: com containerRoot, monta o comando `serve` do code-review-graph co
 });
 
 test("render: sem Ollama alcançável, --tools sai sem a tool de busca semântica", () => {
-  const { mcpConfig } = render(withCodeReviewGraphDetected(), { ollamaReachable: false }, { containerRoot: "/repo" });
+  const { mcpConfig } = render(withCodeReviewGraphDetected(), { reachable: false }, { containerRoot: "/repo" });
   assert.doesNotMatch(mcpConfig.mcpServers[CRG_ID].args[4], /semantic_search_nodes_tool/);
 });
 
@@ -114,7 +115,7 @@ test("render: item detectado sem servidor MCP (graphify, consultado em prosa) n�
 test("render: embeddingEnv passa como está, exceto CRG_OPENAI_BASE_URL de loopback traduzido pro host do Docker", () => {
   const { mcpConfig } = render(
     withCodeReviewGraphDetected(),
-    { ollamaReachable: true },
+    { reachable: true },
     {
       containerRoot: "/repo",
       embeddingEnv: {
@@ -132,14 +133,14 @@ test("render: embeddingEnv passa como está, exceto CRG_OPENAI_BASE_URL de loopb
 });
 
 test("render: embeddingEnv ausente não acrescenta env nenhum ao servidor MCP", () => {
-  const { mcpConfig } = render(withCodeReviewGraphDetected(), { ollamaReachable: true }, { containerRoot: "/repo" });
+  const { mcpConfig } = render(withCodeReviewGraphDetected(), { reachable: true }, { containerRoot: "/repo" });
   assert.equal(mcpConfig.mcpServers[CRG_ID].env, undefined);
 });
 
 test("render: CRG_OPENAI_BASE_URL já apontado pro host do Docker (ou outro host qualquer) não muda", () => {
   const { mcpConfig } = render(
     withCodeReviewGraphDetected(),
-    { ollamaReachable: true },
+    { reachable: true },
     { containerRoot: "/repo", embeddingEnv: { CRG_OPENAI_BASE_URL: "https://api.example.com/v1" } }
   );
   assert.equal(mcpConfig.mcpServers[CRG_ID].env.CRG_OPENAI_BASE_URL, "https://api.example.com/v1");
@@ -220,6 +221,39 @@ test("resolveEmbeddingEnv: .mcp.json sem o servidor code-review-graph devolve s�
   });
 });
 
+test("embeddingTarget: sem CRG_OPENAI_MODEL declarado em lugar nenhum, devolve null — nada a provar", () => {
+  assert.equal(embeddingTarget({}), null);
+  assert.equal(embeddingTarget({ CRG_OPENAI_BASE_URL: "https://api.openai.com/v1" }), null);
+});
+
+test("embeddingTarget: crgEmbeddingEnv vazio e sem provedor resolvido devolve null", () => {
+  assert.equal(embeddingTarget(resolveEmbeddingEnv({}, {})), null);
+});
+
+test("embeddingTarget: CRG_OPENAI_BASE_URL declarado vence — mira o provedor remoto, não o Ollama", () => {
+  const target = embeddingTarget({
+    CRG_OPENAI_BASE_URL: "https://api.openai.com/v1",
+    CRG_OPENAI_MODEL: "text-embedding-3-small",
+    CRG_OPENAI_API_KEY: "sk-invalida",
+  });
+  assert.equal(target.baseUrl, "https://api.openai.com/v1");
+  assert.equal(target.model, "text-embedding-3-small");
+  assert.equal(target.apiKey, "sk-invalida");
+  assert.equal(target.isOllama, false);
+});
+
+test("embeddingTarget: sem CRG_OPENAI_BASE_URL declarado, o Ollama do host é o fallback", () => {
+  const target = embeddingTarget({ CRG_OPENAI_MODEL: "nomic-embed-text" });
+  assert.match(target.baseUrl, /^http:\/\/host\.docker\.internal:11434\/v1$/);
+  assert.equal(target.model, "nomic-embed-text");
+  assert.equal(target.isOllama, true);
+});
+
+test("embeddingTarget: CRG_OPENAI_BASE_URL de loopback é traduzido pro endereço do Docker", () => {
+  const target = embeddingTarget({ CRG_OPENAI_BASE_URL: "http://127.0.0.1:11434/v1", CRG_OPENAI_MODEL: "nomic-embed-text" });
+  assert.equal(target.baseUrl, "http://host.docker.internal:11434/v1");
+});
+
 test("render: sem sonda (probe null), a tool de busca semântica fica fora e as outras nove entram", () => {
   const { tools } = render(withCodeReviewGraphDetected(), null);
   assert.equal(tools.length, 9);
@@ -227,20 +261,20 @@ test("render: sem sonda (probe null), a tool de busca semântica fica fora e as 
 });
 
 test("render: sonda sem Ollama alcançável, a tool de busca semântica fica fora e as outras nove entram", () => {
-  const { tools } = render(withCodeReviewGraphDetected(), { ollamaReachable: false });
+  const { tools } = render(withCodeReviewGraphDetected(), { reachable: false });
   assert.equal(tools.length, 9);
   assert.ok(!tools.includes("semantic_search_nodes_tool"));
 });
 
 test("render: sonda com Ollama alcançável, as dez tools entram", () => {
-  const { tools } = render(withCodeReviewGraphDetected(), { ollamaReachable: true });
+  const { tools } = render(withCodeReviewGraphDetected(), { reachable: true });
   assert.equal(tools.length, 10);
   assert.ok(tools.includes("semantic_search_nodes_tool"));
 });
 
 test("render: backend sem tools sondáveis (graphify) não gera nenhuma tool", () => {
   const detected = [{ id: "graphify", label: "graphify", path: "/repo/graphify-out/graph.json", updatedAt: new Date() }];
-  const { tools } = render(detected, { ollamaReachable: true });
+  const { tools } = render(detected, { reachable: true });
   assert.deepEqual(tools, []);
 });
 
@@ -301,17 +335,46 @@ test("describeAvailability: fala do índice de conhecimento e do label do backen
 });
 
 test("describeDegradation: sem code-review-graph detectado devolve null", () => {
-  assert.equal(describeDegradation([], { ollamaReachable: false }), null);
+  assert.equal(describeDegradation([], { reachable: false }), null);
 });
 
-test("describeDegradation: Ollama alcançável devolve null", () => {
-  assert.equal(describeDegradation(withCodeReviewGraphDetected(), { ollamaReachable: true }), null);
+test("describeDegradation: provedor de embeddings alcançável devolve null", () => {
+  assert.equal(describeDegradation(withCodeReviewGraphDetected(), { reachable: true }), null);
 });
 
-test("describeDegradation: Ollama inalcançável devolve a linha de aviso com o comando que resolve", () => {
-  const line = describeDegradation(withCodeReviewGraphDetected(), { ollamaReachable: false });
+test("describeDegradation: sem endereço sondado (probeResult.address null — sem CRG_OPENAI_MODEL declarado, ou sonda que não rodou), sem citar OLLAMA_HOST", () => {
+  const line = describeDegradation(withCodeReviewGraphDetected(), { reachable: false, address: null, isOllama: false });
   assert.match(line, /busca semântica/);
+  assert.match(line, /nenhum endereço sondado/);
+  assert.doesNotMatch(line, /OLLAMA_HOST/);
+});
+
+test("describeDegradation: probeResult ausente (sonda ainda não rodou) usa a mesma linha genérica, sem afirmar causa", () => {
+  const line = describeDegradation(withCodeReviewGraphDetected(), null);
+  assert.match(line, /nenhum endereço sondado/);
+  assert.doesNotMatch(line, /OLLAMA_HOST/);
+});
+
+test("describeDegradation: Ollama (fallback) reprovado nomeia o endereço sondado e cita OLLAMA_HOST=0.0.0.0", () => {
+  const line = describeDegradation(withCodeReviewGraphDetected(), {
+    reachable: false,
+    address: "http://host.docker.internal:11434/v1",
+    isOllama: true,
+  });
+  assert.match(line, /busca semântica/);
+  assert.match(line, /host\.docker\.internal:11434\/v1/);
   assert.match(line, /OLLAMA_HOST=0\.0\.0\.0/);
+});
+
+test("describeDegradation: provedor remoto declarado reprovado nomeia o endereço sondado, sem sugerir OLLAMA_HOST", () => {
+  const line = describeDegradation(withCodeReviewGraphDetected(), {
+    reachable: false,
+    address: "https://api.openai.com/v1",
+    isOllama: false,
+  });
+  assert.match(line, /busca semântica/);
+  assert.match(line, /api\.openai\.com\/v1/);
+  assert.doesNotMatch(line, /OLLAMA_HOST/);
 });
 
 test("describe: repositório sem índice devolve lista vazia", () => {

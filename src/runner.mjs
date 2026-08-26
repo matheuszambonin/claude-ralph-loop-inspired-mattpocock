@@ -17,7 +17,7 @@ import {
   detect as detectKnowledgeIndex,
   render as renderKnowledgeIndex,
   probe as probeKnowledgeIndex,
-  needsOllamaProbe,
+  needsEmbeddingProbe,
   describeMcpFailure,
   readTargetMcpConfig,
   resolveEmbeddingEnv,
@@ -251,10 +251,11 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   // só entra quando há backend que sobe servidor (hoje só code-review-graph);
   // sem ele, `--strict-mcp-config` sozinho já deixa a sessão sem MCP nenhum.
   const detected = detectKnowledgeIndex(root, cfg);
-  const probeResult = needsOllamaProbe(detected) ? await probeKnowledgeIndex(cfg.sandboxName) : null;
+  const embeddingEnv = resolveEmbeddingEnv(readTargetMcpConfig(root), cfg.crgEmbeddingEnv);
+  const probeResult = needsEmbeddingProbe(detected) ? await probeKnowledgeIndex(cfg.sandboxName, embeddingEnv) : null;
   const { mcpConfig, tools } = renderKnowledgeIndex(detected, probeResult, {
     containerRoot: workdir,
-    embeddingEnv: resolveEmbeddingEnv(readTargetMcpConfig(root), cfg.crgEmbeddingEnv),
+    embeddingEnv,
   });
   const mcpArgs = mcpConfig ? ["--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config"] : ["--strict-mcp-config"];
 
