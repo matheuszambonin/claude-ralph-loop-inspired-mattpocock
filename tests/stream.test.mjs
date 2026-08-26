@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createStreamRenderer, accumulateModelUsage, formatCostByModel } from "../src/stream.mjs";
+import {
+  createStreamRenderer,
+  accumulateModelUsage,
+  formatCostByModel,
+  formatOrientationWarning,
+} from "../src/stream.mjs";
 
 function feed(renderer, evt) {
   renderer.write(JSON.stringify(evt) + "\n");
@@ -140,6 +145,52 @@ test("createStreamRenderer: subagent_tokens na saída de um Bash não entra na c
   });
   const state = renderer.end();
   assert.equal(state.subagentTokens, 0);
+});
+
+test("createStreamRenderer: conta as invocações da Orientação, e só as dela", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "toolu_1", name: "Agent", input: { subagent_type: "orientation" } },
+        { type: "tool_use", id: "toolu_2", name: "Agent", input: { description: "o Claude Code delega por conta própria" } },
+        { type: "tool_use", id: "toolu_3", name: "Agent", input: { subagent_type: "orientation" } },
+      ],
+    },
+  });
+  const state = renderer.end();
+  assert.equal(state.orientationCalls, 2);
+});
+
+test("createStreamRenderer: estourar o teto avisa, mas não reprova a iteração", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "toolu_1", name: "Agent", input: { subagent_type: "orientation" } },
+        { type: "tool_use", id: "toolu_2", name: "Agent", input: { subagent_type: "orientation" } },
+      ],
+    },
+  });
+  feed(renderer, { type: "result", subtype: "success", total_cost_usd: 0.5, num_turns: 3 });
+  const state = renderer.end();
+  assert.equal(state.orientationCalls, 2);
+  assert.equal(state.isError, false);
+});
+
+test("formatOrientationWarning: uma orientação por iteração não imprime nada", () => {
+  assert.equal(formatOrientationWarning(1), "");
+  assert.equal(formatOrientationWarning(0), "");
+});
+
+test("formatOrientationWarning: mais de uma orientação avisa e diz qual é o teto", () => {
+  const line = formatOrientationWarning(2);
+  assert.match(line, /2 orientações/);
+  assert.match(line, /ADR-0004/);
 });
 
 test("formatCostByModel: sem custo total, a quebra por modelo vira o total", () => {

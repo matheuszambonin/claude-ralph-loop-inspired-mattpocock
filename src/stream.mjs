@@ -64,6 +64,7 @@ export function createStreamRenderer({ onEvent } = {}) {
     mcpServers: null,
     modelUsage: null,
     subagentTokens: 0,
+    orientationCalls: 0,
   };
 
   // Ids dos `tool_use` do Agent tool. Sem isto, qualquer `tool_result` que
@@ -93,7 +94,18 @@ export function createStreamRenderer({ onEvent } = {}) {
             state.text += block.text;
             process.stdout.write(block.text.replace(/\n/g, "\n") + "\n\n");
           } else if (block.type === "tool_use") {
-            if (block.name === "Agent" || block.name === "Task") subagentCalls.add(block.id);
+            if (block.name === "Agent" || block.name === "Task") {
+              subagentCalls.add(block.id);
+              // Só a Orientação entra na conta: o Claude Code dispara o Agent
+              // por conta própria 2 a 3 vezes por iteração (medido na #9), e
+              // contar tudo faria o aviso do teto tocar em toda iteração.
+              // Literal como `"Agent"` e `"Task"` acima — este módulo lê o
+              // protocolo do CLI e não conhece o resto do Ralph; importar o
+              // nome de `orientation.mjs` arrastaria Docker e fs para cá.
+              // Conta o `tool_use`, não a execução: o teto do ADR-0004 proíbe
+              // pedir a Orientação de novo, mesmo que a primeira tenha falhado.
+              if (block.input?.subagent_type === "orientation") state.orientationCalls += 1;
+            }
             const detail = describeTool(block.name, block.input);
             process.stdout.write(
               `${paint(C.cyan, "⚙")} ${paint(C.bold, block.name)}${detail ? paint(C.dim, "  " + detail) : ""}\n`
@@ -131,10 +143,15 @@ export function createStreamRenderer({ onEvent } = {}) {
         state.modelUsage = evt.modelUsage ?? null;
         const secs = ((evt.duration_ms ?? 0) / 1000).toFixed(0);
         const cost = state.costUsd ? `$${state.costUsd.toFixed(4)}` : "—";
-        const subagent = state.subagentTokens ? ` · subagentes ${state.subagentTokens} tokens` : "";
         process.stdout.write(
-          paint(C.dim, `\n  ${state.turns} turnos · ${secs}s · ${cost}${subagent}\n`)
+          paint(C.dim, `\n  ${state.turns} turnos · ${secs}s · ${cost}\n`)
         );
+        // Amarelo, nunca `code !== 0`: o teto protege a economia, não a
+        // correção. A iteração que orientou duas vezes entregou o ticket
+        // certo e custou ~$0,03 a mais — matar um `ralph afk` de 8 iterações
+        // por isso é a troca errada, ainda mais com o operador dormindo.
+        const warning = formatOrientationWarning(state.orientationCalls);
+        if (warning) process.stdout.write(paint(C.yellow, `  ${warning}\n`));
         break;
       }
     }
@@ -193,6 +210,17 @@ function parseSubagentTokens(text) {
 function shortModelName(canonicalModel) {
   const m = /^claude-([a-z]+)/i.exec(canonicalModel);
   return m ? m[1].toLowerCase() : canonicalModel;
+}
+
+/**
+ * Silêncio quando o teto é respeitado (issue #15). A versão anterior imprimia
+ * os tokens de subagente em toda iteração, e um número que aparece sempre não
+ * distingue a iteração que destoou — que é a única razão de olhar a linha. Os
+ * tokens continuam no resumo do loop, acumulados.
+ */
+export function formatOrientationWarning(orientationCalls) {
+  if (orientationCalls <= 1) return "";
+  return `⚠ ${orientationCalls} orientações nesta iteração — o teto é uma (ADR-0004)`;
 }
 
 /**
