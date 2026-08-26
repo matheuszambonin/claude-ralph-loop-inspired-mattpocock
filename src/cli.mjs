@@ -236,7 +236,7 @@ async function cmdDoctor(flags) {
   if (flags.night) {
     const provider = resolveProvider(cfg, { night: true });
     const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
-    const degradation = describeProviderDegradation(probeResult, provider.minContext);
+    const degradation = describeProviderDegradation(probeResult, provider.minContext, provider.baseUrl);
     degradation ? warn(degradation) : ok(describeProviderAvailability(provider));
   }
 

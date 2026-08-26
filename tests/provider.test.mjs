@@ -295,7 +295,38 @@ test("probeBoth: as duas pernas aprovando devolve alcance com as outras provas d
   });
   const { execImpl } = fakeExec(0);
   const result = await probeBoth("sbx", fakeProvider(), { fetchImpl, execImpl });
-  assert.deepEqual(result, { reachable: true, toolUse: true, contextOk: true });
+  assert.deepEqual(result, {
+    reachable: true,
+    toolUse: true,
+    contextOk: true,
+    reachableFromHost: true,
+    reachableFromSandbox: true,
+  });
+});
+
+// --- as duas pernas preservadas, não só a conjunção (issue #45) ---
+
+test("probeBoth: host aprova e sandbox reprova preserva as duas pernas além da conjunção", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] },
+    canaryAnswer: "A senha é SENHA_INICIAL",
+  });
+  const { execImpl } = fakeExec(1);
+  const result = await probeBoth("sbx", fakeProvider(), { fetchImpl, execImpl });
+  assert.equal(result.reachable, false);
+  assert.equal(result.reachableFromHost, true);
+  assert.equal(result.reachableFromSandbox, false);
+});
+
+test("probeBoth: host reprova e sandbox aprova preserva as duas pernas", async () => {
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+  const { execImpl } = fakeExec(0);
+  const result = await probeBoth("sbx", fakeProvider(), { fetchImpl, execImpl });
+  assert.equal(result.reachable, false);
+  assert.equal(result.reachableFromHost, false);
+  assert.equal(result.reachableFromSandbox, true);
 });
 
 // --- aquecer o modelo antes da iteração 1 (issue #34) ---
@@ -360,4 +391,19 @@ test("describeDegradation: canário reprovado prescreve o minContext declarado, 
   const msg = describeDegradation({ reachable: true, toolUse: true, contextOk: false }, 65536);
   assert.match(msg, /OLLAMA_CONTEXT_LENGTH=65536/);
   assert.doesNotMatch(msg, /131072/);
+});
+
+// --- a mensagem distingue a perna do host da perna do sandbox (issue #45) ---
+
+test("describeDegradation: host reprova nomeia OLLAMA_HOST, mesma linha de sempre", () => {
+  const probeResult = { reachable: false, reachableFromHost: false, reachableFromSandbox: false };
+  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434");
+  assert.match(msg, /OLLAMA_HOST=0\.0\.0\.0/);
+});
+
+test("describeDegradation: host aprova e sandbox reprova nomeia o endereço traduzido, não manda reiniciar o serviço", () => {
+  const probeResult = { reachable: false, reachableFromHost: true, reachableFromSandbox: false };
+  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434");
+  assert.match(msg, /http:\/\/host\.docker\.internal:11434/);
+  assert.doesNotMatch(msg, /OLLAMA_HOST=0\.0\.0\.0/);
 });

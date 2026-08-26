@@ -203,13 +203,24 @@ export async function probeFromSandbox(sandboxName, provider, { execImpl = execC
  * verdade: `prepare()` (antes da iteração 1) e `ralph doctor` (issue #33)
  * precisavam exatamente da mesma combinação, e tê-la em dois lugares já
  * divergiu uma vez no code-review desta issue.
+ *
+ * `reachableFromHost`/`reachableFromSandbox` preservam as duas pernas (issue
+ * #45) — antes só o `&&` sobrevivia em `reachable`, e `describeDegradation`
+ * não conseguia distinguir qual perna reprovou para prescrever o comando
+ * certo. `reachable` continua a conjunção derivada, para não quebrar quem já
+ * lê só esse campo.
  */
 export async function probeBoth(sandboxName, provider, opts = {}) {
   const [hostProbe, sandboxProbe] = await Promise.all([
     probe(provider, opts),
     probeFromSandbox(sandboxName, provider, opts),
   ]);
-  return { ...hostProbe, reachable: hostProbe.reachable && sandboxProbe.reachable };
+  return {
+    ...hostProbe,
+    reachableFromHost: hostProbe.reachable,
+    reachableFromSandbox: sandboxProbe.reachable,
+    reachable: hostProbe.reachable && sandboxProbe.reachable,
+  };
 }
 
 /**
@@ -261,10 +272,26 @@ export function describeAvailability(provider) {
  *
  * `minContext` prescreve o mesmo número que o canário exigiu (issue #42) —
  * quem chama passa `provider.minContext`, o mesmo valor que `probe()` usou
- * para dimensionar o prompt.
+ * para dimensionar o prompt. `baseUrl` é o mesmo raciocínio para a issue
+ * #45: dado do Provedor, não da sonda, e quem chama já tem `provider.baseUrl`
+ * (já traduzido por `translateLoopback` em `resolve()`) em mãos.
+ *
+ * Host aprovado e sandbox reprovado (issue #45) é o caso comum sob
+ * `docker sandbox` — o Ollama já está de pé, o problema é a rota do
+ * container até ele (proxy do docker sandbox, firewall do adaptador Docker,
+ * porta divergente). Mandar `OLLAMA_HOST=0.0.0.0` e reiniciar o serviço aí é
+ * ruído: o operador já fez isso, e a saída não distinguia as duas pernas.
  */
-export function describeDegradation(probeResult, minContext) {
+export function describeDegradation(probeResult, minContext, baseUrl) {
   if (!probeResult.reachable) {
+    if (probeResult.reachableFromHost && !probeResult.reachableFromSandbox) {
+      return (
+        `Provedor local respondeu ao host em ${baseUrl}, mas o sandbox não alcançou o mesmo endereço. ` +
+        "O Ollama já está de pé — reiniciar o serviço não resolve. Confira se a porta em " +
+        `${baseUrl} é a mesma que o Ollama expõe e reinicie o Docker Desktop para restaurar a rota ` +
+        "do sandbox até o host."
+      );
+    }
     return "Provedor local inalcançável. Rode o Ollama do host com OLLAMA_HOST=0.0.0.0 e reinicie o serviço.";
   }
   if (!probeResult.toolUse) {
