@@ -29,6 +29,7 @@ import {
   requiresAnthropicAuth,
   probeBoth as probeProviderBoth,
   describeDegradation as describeProviderDegradation,
+  preload as preloadProvider,
 } from "./provider.mjs";
 
 function feedbackLoopsBlock(cfg) {
@@ -208,6 +209,19 @@ async function warnIfAuthFailed(state, cfg) {
   );
 }
 
+/**
+ * Aquecer o Provedor local antes da iteração 1 não é falha alta (issue #34,
+ * diferente das três provas de `probeProviderBoth`) — a primeira iteração
+ * carrega o modelo sozinha, só mais devagar, então isto só avisa.
+ */
+function warnIfPreloadFailed(warmed) {
+  if (warmed) return;
+  process.stdout.write(
+    paint(C.yellow, `\n  ! não consegui aquecer o Provedor local antes da iteração 1.\n`) +
+      paint(C.dim, `    a primeira iteração carrega o modelo sozinha, só mais devagar.\n`)
+  );
+}
+
 function logFile(root, iteration) {
   const dir = path.join(ralphDir(root), "logs");
   mkdirSync(dir, { recursive: true });
@@ -317,6 +331,10 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
     const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
     const failure = describeProviderDegradation(probeResult);
     if (failure) throw new Error(failure);
+
+    // Aquece o modelo antes da iteração 1 (issue #34) — sem isso, cada
+    // iteração paga sozinha o carregamento de dezenas de GB.
+    warnIfPreloadFailed(await preloadProvider(provider));
   }
   return { branch, provider };
 }

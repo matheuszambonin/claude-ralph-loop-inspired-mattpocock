@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolve, renderEnv, requiresAnthropicAuth, probe, describeAvailability, describeDegradation, DEFAULT_NIGHT_PROVIDER } from "../src/provider.mjs";
+import {
+  resolve,
+  renderEnv,
+  requiresAnthropicAuth,
+  probe,
+  preload,
+  describeAvailability,
+  describeDegradation,
+  DEFAULT_NIGHT_PROVIDER,
+} from "../src/provider.mjs";
 
 function baseCfg(overrides = {}) {
   return { model: "sonnet", orientationModel: "haiku", ...overrides };
@@ -47,6 +56,16 @@ test("resolve: com night e nightProvider ausente do config, cai nos padrões sem
 test("resolve: com night, endereço de loopback do config é traduzido pro host do Docker", () => {
   const cfg = baseCfg({ nightProvider: { baseUrl: "http://127.0.0.1:11434/v1" } });
   assert.equal(resolve(cfg, { night: true }).baseUrl, "http://host.docker.internal:11434/v1");
+});
+
+test("resolve: com night e keepAlive ausente do config, o padrão cobre uma noite inteira", () => {
+  const provider = resolve(baseCfg({ nightProvider: { model: "qwen3-coder:30b" } }), { night: true });
+  assert.equal(provider.keepAlive, DEFAULT_NIGHT_PROVIDER.keepAlive);
+});
+
+test("resolve: com night e keepAlive declarado no config, o valor do operador vence o padrão", () => {
+  const cfg = baseCfg({ nightProvider: { model: "qwen3-coder:30b", keepAlive: "30m" } });
+  assert.equal(resolve(cfg, { night: true }).keepAlive, "30m");
 });
 
 test("renderEnv: Provedor anthropic devolve objeto vazio", () => {
@@ -133,6 +152,36 @@ test("probe: porta fechada (fetchImpl lança) devolve reachable false sem propag
   };
   const result = await probe(fakeProvider(), { fetchImpl });
   assert.deepEqual(result, { reachable: false, toolUse: false, contextOk: false, answered: null });
+});
+
+// --- aquecer o modelo antes da iteração 1 (issue #34) ---
+
+test("preload: pede /api/generate sem prompt, com o modelo e o keep_alive do Provedor", async () => {
+  let received = null;
+  const fetchImpl = async (url, opts) => {
+    received = { url, body: JSON.parse(opts.body) };
+    return { ok: true };
+  };
+  const provider = fakeProvider({ keepAlive: "8h" });
+  const ok = await preload(provider, { fetchImpl });
+  assert.equal(ok, true);
+  assert.equal(received.url, "http://fake-ollama:11434/api/generate");
+  assert.deepEqual(received.body, { model: "test-model", keep_alive: "8h" });
+  assert.equal("prompt" in received.body, false);
+});
+
+test("preload: resposta não-ok devolve false sem lançar", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 404 });
+  const ok = await preload(fakeProvider(), { fetchImpl });
+  assert.equal(ok, false);
+});
+
+test("preload: fetchImpl que lança (porta fechada) devolve false sem propagar exceção", async () => {
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+  const ok = await preload(fakeProvider(), { fetchImpl });
+  assert.equal(ok, false);
 });
 
 test("describeAvailability: nomeia o Provedor local e o modelo, não o Ollama", () => {

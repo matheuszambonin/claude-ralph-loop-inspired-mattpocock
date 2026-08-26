@@ -12,6 +12,9 @@ export const DEFAULT_NIGHT_PROVIDER = {
   baseUrl: `http://${dockerHostAddress()}:11434`,
   model: "qwen3-coder:30b-a3b-q4_K_M",
   orientationModel: null,
+  // Padrão cobre uma noite inteira (issue #34) — expira sozinho no Ollama,
+  // nada persistente é escrito.
+  keepAlive: "8h",
 };
 
 /**
@@ -37,6 +40,7 @@ export function resolve(cfg, { night = false } = {}) {
     baseUrl: translateLoopback(provider.baseUrl),
     model: provider.model,
     orientationModel: provider.orientationModel ?? provider.model,
+    keepAlive: provider.keepAlive,
   };
 }
 
@@ -184,6 +188,30 @@ export async function probeFromSandbox(sandboxName, provider) {
 export async function probeBoth(sandboxName, provider, opts = {}) {
   const [hostProbe, sandboxProbe] = await Promise.all([probe(provider, opts), probeFromSandbox(sandboxName, provider)]);
   return { ...hostProbe, reachable: hostProbe.reachable && sandboxProbe.reachable };
+}
+
+/**
+ * Aquece o Provedor local antes da iteração 1 (issue #34): um `/api/generate`
+ * sem `prompt` só carrega o modelo na memória do Ollama e declara por quanto
+ * tempo ele fica residente — a única escrita que o Ralph faz no Ollama do
+ * operador, e ela expira sozinha (`keep_alive`), sem instalar, criar ou
+ * reconfigurar nada.
+ *
+ * Nunca lança: falha ao aquecer não é falha alta (diferente das três provas
+ * de `probe`) — a primeira iteração carrega o modelo sozinha, só mais devagar.
+ * Quem chama decide como avisar.
+ */
+export async function preload(provider, { fetchImpl = fetch } = {}) {
+  try {
+    const res = await fetchImpl(joinUrl(provider.baseUrl, "/api/generate"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: provider.model, keep_alive: provider.keepAlive }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 /**
