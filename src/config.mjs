@@ -104,3 +104,21 @@ export function saveConfig(root, cfg) {
 export function isInitialized(root) {
   return existsSync(configPath(root));
 }
+
+/**
+ * `--night` e `--model` entram pela mesma costura (ADR-0006) — a mesma linha
+ * de comando produz sempre o mesmo Provedor, nunca o relógio. Com `--night`,
+ * `--model` sobrescreve `nightProvider.model` em vez de `cfg.model`: é
+ * `provider.resolve` (src/provider.mjs) quem lê esse campo quando a flag está
+ * ligada, e sem isso a tag do operador cairia num campo que o Provedor local
+ * ignora.
+ */
+export function withOverrides(cfg, flags) {
+  if (flags.night) cfg.night = true;
+  if (flags.model) {
+    if (cfg.night) cfg.nightProvider = { ...(cfg.nightProvider ?? {}), model: flags.model };
+    else cfg.model = flags.model;
+  }
+  if (flags.prompt) cfg.promptFile = flags.prompt;
+  return cfg;
+}
