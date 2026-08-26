@@ -214,6 +214,94 @@ comandos que o agente é proibido de contornar antes de commitar — sem eles,
 Ralph commita às cegas. Se o repo não é Node, preencha à mão (`cargo test`,
 `pytest -q`, `mise run check`, o que for).
 
+## Night mode
+
+`--night` troca de onde vem a inferência de uma iteração: em vez da API paga
+da Anthropic, o Claude Code de dentro do sandbox fala com um **Provedor**
+local — o Ollama da máquina do operador. Existe para gastar tempo de máquina
+ociosa em vez de token pago — **não** para sigilo (o código já sai da máquina
+para o sandbox local do jeito de sempre) e **não** para velocidade (um modelo
+local roda mais devagar que a API paga). `ralph afk -n 40 --night` custa o
+consumo de energia de uma noite, não a fatura de 40 iterações do Claude pago.
+
+O modo é tudo-ou-nada e entra só pela flag, nunca pelo relógio (ADR-0006): a
+mesma linha de comando produz o mesmo Provedor às três da tarde e às três da
+manhã, o que mantém duas entradas do `PROGRESS.md` comparáveis sem arqueologia
+de horário. A Orientação e o trabalho em código de uma iteração pensam sempre
+no mesmo Provedor — `ANTHROPIC_BASE_URL` é variável de processo, não de fase
+(ADR-0007); o que continua sendo escolhido por fase é só o modelo.
+
+```jsonc
+{
+  "nightProvider": {
+    // endereço do Ollama a partir de dentro do sandbox; 127.0.0.1/localhost
+    // escritos aqui são traduzidos pro host do Docker automaticamente
+    "baseUrl": "http://host.docker.internal:11434",
+    // padrão — validado nas três provas abaixo na máquina de referência da issue #29
+    "model": "qwen3-coder:30b-a3b-q4_K_M",
+    // null = herda o modelo acima (ADR-0007); troque só se quiser um modelo
+    // menor pra fase que só lê e relata
+    "orientationModel": null,
+    // por quanto tempo o Ollama mantém o modelo residente; "8h" cobre uma
+    // noite inteira e expira sozinho, sem nada persistente escrito
+    "keepAlive": "8h"
+  }
+}
+```
+
+Sem `nightProvider` no config, `--night` cai no bloco acima inteiro — o
+operador só escreve o que quer trocar.
+
+### O que precisa estar de pé no host
+
+O Ralph fala com o Ollama do host de dentro do sandbox Docker. Três coisas
+precisam estar configuradas do lado de fora, e **o Ralph não instala, não
+baixa e não reconfigura nada do Ollama** — mesma fronteira do índice de
+conhecimento (ADR-0001): ele mede e prescreve o comando, o operador decide.
+
+| Do lado do host | Por quê |
+|---|---|
+| `OLLAMA_HOST=0.0.0.0` | por padrão o Ollama só escuta em `127.0.0.1`, que de dentro do sandbox é o próprio container — sem isso o Provedor é inalcançável |
+| `OLLAMA_CONTEXT_LENGTH=131072` (ou o que o repo exigir) | o padrão do Ollama (2048–8192, conforme a versão) trunca o prompt da iteração em silêncio e o modelo responde com confiança sobre o pedaço que sobrou — o canário de contexto do `doctor` é como isso é pego antes de gastar uma iteração |
+| `keep_alive` / tempo de residência do modelo | sem residência, cada iteração paga de novo o carregamento de dezenas de GB; é o único campo que o Ralph escreve no Ollama, via `preload()` antes da iteração 1, e ele expira sozinho |
+
+`ollama pull <tag>`, o serviço em si e a escolha de hardware continuam sendo
+responsabilidade do operador — não há `ralph index build` equivalente aqui.
+
+### Fluxo recomendado
+
+```bash
+ralph doctor              # roda as três provas do Provedor local antes de gastar tempo de máquina
+ralph once --night        # uma iteração assistida — aprenda como o modelo escolhido se comporta
+ralph afk -n 20 --night   # o loop, sem supervisão
+```
+
+`ralph doctor` roda as mesmas três provas que a primeira iteração de um
+`--night` roda sozinha, só que em segundos, antes do loop existir: **alcance**
+(a partir do host e do sandbox), **`tool_use` estruturado** (um pedido que só
+uma chamada de ferramenta resolve — alguns modelos anunciam a capacidade e
+escrevem a chamada como texto solto, e reprovam mesmo assim) e o **canário de
+contexto** (um prompt maior que qualquer `num_ctx` padrão do Ollama, que só
+aprova se a resposta cita o início do texto e não o fim). Qualquer reprovação
+sai com o comando que conserta. Pular direto para `ralph afk --night` funciona,
+mas gasta a primeira noite aprendendo o que `once` teria mostrado num minuto.
+
+### Contenção de GPU com a busca semântica
+
+Se o repositório alvo tem o índice de conhecimento (`code-review-graph`), a
+busca semântica dele fala com o mesmo Ollama do host — para embeddings, não
+para a inferência da iteração —, e as duas coisas dividem a mesma GPU. Medido
+na máquina de referência: o modelo de código (31 GB, 46% GPU) e o de
+embeddings (2,4 GB, 100% GPU) coexistem sem despejo, com pouca VRAM de sobra.
+É contenção aceita, não um bug — se o operador quiser mais folga, a saída é
+reduzir `OLLAMA_CONTEXT_LENGTH`; o Ralph não decide isso por conta própria.
+
+Quando a folga não sobra, a busca semântica degrada em vez de travar a
+iteração: `ralph doctor` mostra a linha "busca semântica do
+code-review-graph indisponível" enquanto as outras nove tools do índice
+continuam funcionando — o mesmo aviso aparece se você rodar `doctor` no meio
+de uma noite ocupada.
+
 ## Prompts de loop
 
 `ralph init --prompt <nome>` copia um dos templates de `prompts/` para
@@ -238,15 +326,17 @@ partir do config.
 | `ralph doctor` | checa docker, sandbox, plugins, login e fonte de tarefas |
 | `ralph login [--share-credentials]` | autentica o Claude dentro do sandbox |
 | `ralph gh-login [--token[=valor]]` | autentica o `gh` dentro do sandbox |
-| `ralph once [--allow-branch]` | uma iteração (HITL) |
-| `ralph afk [-n N] [--allow-branch]` | o loop (AFK) |
+| `ralph once [--allow-branch] [--night]` | uma iteração (HITL) |
+| `ralph afk [-n N] [--allow-branch] [--night]` | o loop (AFK) |
 | `ralph status` | últimas entradas do `PROGRESS.md` |
 | `ralph shell` | bash dentro do sandbox |
 | `ralph bootstrap [--force]` | reinstala plugins/skills no sandbox |
 | `ralph sandboxes` / `ralph mounts` / `ralph rm` | inspeção e limpeza |
 
-Opções comuns: `--model <nome>`, `--prompt <arquivo>`, e `-- <args>` para
-repassar argumentos crus ao `claude`.
+Opções comuns: `--model <nome>` (com `--night`, sobrescreve
+`nightProvider.model` em vez do modelo da API paga), `--prompt <arquivo>`, e
+`-- <args>` para repassar argumentos crus ao `claude`. Detalhes de `--night`
+em [Night mode](#night-mode).
 
 ## Streaming
 
