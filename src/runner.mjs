@@ -23,7 +23,14 @@ import {
   resolveEmbeddingEnv,
 } from "./knowledge-index.mjs";
 import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
-import { resolve as resolveProvider, renderEnv as renderProviderEnv, requiresAnthropicAuth } from "./provider.mjs";
+import {
+  resolve as resolveProvider,
+  renderEnv as renderProviderEnv,
+  requiresAnthropicAuth,
+  probe as probeProvider,
+  probeFromSandbox as probeProviderFromSandbox,
+  describeDegradation as describeProviderDegradation,
+} from "./provider.mjs";
 
 function feedbackLoopsBlock(cfg) {
   return (cfg.feedbackLoops ?? []).length
@@ -304,6 +311,19 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
   if (requiresAnthropicAuth(provider)) {
     const auth = await checkAuth(cfg.sandboxName);
     if (!auth.ok) throw new Error(`sandbox '${cfg.sandboxName}': ${auth.message}`);
+  } else {
+    // As três provas do Provedor (issue #32): falha alta antes da iteração 1,
+    // nunca um fallback silencioso pro Claude pago — o operador está dormindo
+    // e não veria o aviso a tempo. Alcance prova dos dois lados (issue #29,
+    // "os dois têm de passar"): o host, que roda `tool_use` e o canário, e o
+    // sandbox, que é quem de fato consome o Provedor durante a iteração.
+    const [hostProbe, sandboxProbe] = await Promise.all([
+      probeProvider(provider),
+      probeProviderFromSandbox(cfg.sandboxName, provider),
+    ]);
+    const probeResult = { ...hostProbe, reachable: hostProbe.reachable && sandboxProbe.reachable };
+    const failure = describeProviderDegradation(probeResult);
+    if (failure) throw new Error(failure);
   }
   return { branch, provider };
 }

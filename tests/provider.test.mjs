@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolve, renderEnv, requiresAnthropicAuth, DEFAULT_NIGHT_PROVIDER } from "../src/provider.mjs";
+import { resolve, renderEnv, requiresAnthropicAuth, probe, describeDegradation, DEFAULT_NIGHT_PROVIDER } from "../src/provider.mjs";
 
 function baseCfg(overrides = {}) {
   return { model: "sonnet", orientationModel: "haiku", ...overrides };
@@ -63,4 +63,93 @@ test("renderEnv: Provedor local traz base URL e um token não-vazio", () => {
 test("requiresAnthropicAuth: true para anthropic, false para local", () => {
   assert.equal(requiresAnthropicAuth(resolve(baseCfg(), { night: false })), true);
   assert.equal(requiresAnthropicAuth(resolve(baseCfg(), { night: true })), false);
+});
+
+// --- as três provas do Provedor (issue #32) ---
+
+function fakeProvider(overrides = {}) {
+  return { kind: "local", baseUrl: "http://fake-ollama:11434", model: "test-model", orientationModel: "test-model", ...overrides };
+}
+
+function jsonResponse(body) {
+  return { ok: true, status: 200, json: async () => body };
+}
+
+/** fetchImpl injetado: `/api/tags` sempre aprova, `/v1/messages` devolve a
+ *  resposta de tool_use quando o corpo declara `tools`, senão a do canário. */
+function mockFetch({ toolUseResponse, canaryAnswer }) {
+  return async (url, opts) => {
+    if (url.endsWith("/api/tags")) return jsonResponse({});
+    if (url.endsWith("/v1/messages")) {
+      const body = JSON.parse(opts.body);
+      if (body.tools) return jsonResponse(toolUseResponse);
+      return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: canaryAnswer }] });
+    }
+    throw new Error("url inesperada: " + url);
+  };
+}
+
+test("probe: aprova tool_use quando a resposta traz bloco tool_use e stop_reason tool_use", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] },
+    canaryAnswer: "irrelevante para este teste",
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.reachable, true);
+  assert.equal(result.toolUse, true);
+});
+
+test("probe: reprova tool_use quando a mesma pergunta volta como texto solto (stop_reason end_turn)", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: { stop_reason: "end_turn", content: [{ type: "text", text: "o resultado é 4" }] },
+    canaryAnswer: "irrelevante para este teste",
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.reachable, true);
+  assert.equal(result.toolUse, false);
+});
+
+test("probe: canário aprova quando a resposta cita a senha inicial", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] },
+    canaryAnswer: "A senha é SENHA_INICIAL",
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, true);
+});
+
+test("probe: canário reprova quando a resposta cita a senha final", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] },
+    canaryAnswer: "A senha é SENHA_FINAL",
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, false);
+});
+
+test("probe: porta fechada (fetchImpl lança) devolve reachable false sem propagar exceção", async () => {
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.deepEqual(result, { reachable: false, toolUse: false, contextOk: false, answered: null });
+});
+
+test("describeDegradation: sonda aprovada em tudo devolve null", () => {
+  assert.equal(describeDegradation({ reachable: true, toolUse: true, contextOk: true, answered: "SENHA_INICIAL" }), null);
+});
+
+test("describeDegradation: inalcançável nomeia OLLAMA_HOST", () => {
+  const msg = describeDegradation({ reachable: false, toolUse: false, contextOk: false, answered: null });
+  assert.match(msg, /OLLAMA_HOST=0\.0\.0\.0/);
+});
+
+test("describeDegradation: sem tool_use pede pra trocar de modelo em nightProvider.model", () => {
+  const msg = describeDegradation({ reachable: true, toolUse: false, contextOk: false, answered: null });
+  assert.match(msg, /nightProvider\.model/);
+});
+
+test("describeDegradation: canário reprovado nomeia OLLAMA_CONTEXT_LENGTH", () => {
+  const msg = describeDegradation({ reachable: true, toolUse: true, contextOk: false, answered: "SENHA_FINAL" });
+  assert.match(msg, /OLLAMA_CONTEXT_LENGTH/);
 });

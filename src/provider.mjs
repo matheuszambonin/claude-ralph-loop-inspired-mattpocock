@@ -1,4 +1,5 @@
 import { dockerHostAddress, translateLoopback } from "./paths.mjs";
+import { tcpReachable } from "./sandbox.mjs";
 
 /**
  * Padrão do Provedor local (issue #29, "O que foi medido, e onde"): tag
@@ -60,4 +61,140 @@ export function renderEnv(provider) {
  */
 export function requiresAnthropicAuth(provider) {
   return provider.kind === "anthropic";
+}
+
+function joinUrl(baseUrl, urlPath) {
+  return baseUrl.replace(/\/$/, "") + urlPath;
+}
+
+/**
+ * Ferramenta e pedido da prova de `tool_use` (issue #32): um pedido que
+ * **exige** a ferramenta pra responder, porque a capacidade `tools` que
+ * `ollama show` anuncia mente — dois modelos medidos na máquina de
+ * referência anunciam e reprovam, escrevendo a chamada como texto solto.
+ */
+const TOOL_USE_PROBE_TOOL = {
+  name: "answer",
+  description: "Reports the numeric result of the calculation.",
+  input_schema: { type: "object", properties: { result: { type: "number" } }, required: ["result"] },
+};
+const TOOL_USE_PROBE_PROMPT = "What is 2 + 2? Use the `answer` tool to report the result — do not answer in plain text.";
+
+const CANARY_START = "SENHA_INICIAL";
+const CANARY_END = "SENHA_FINAL";
+// ~45 mil caracteres (~11 mil tokens): maior que o num_ctx padrão do Ollama
+// em qualquer versão medida (2048–8192). Medir vence ler configuração —
+// OLLAMA_CONTEXT_LENGTH do servidor não aparece em /api/show.
+const CANARY_FILLER = "texto de preenchimento sem significado, só para ocupar espaço no contexto. ".repeat(600);
+
+function canaryPrompt() {
+  return (
+    `${CANARY_START}\n\n${CANARY_FILLER}\n\n${CANARY_END}\n\n` +
+    "Qual é a senha que aparece logo no início deste texto? Responda só com a senha, nada mais."
+  );
+}
+
+async function postMessages(fetchImpl, baseUrl, body) {
+  const res = await fetchImpl(joinUrl(baseUrl, "/v1/messages"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`status ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Impura, mas só de rede (issue #32): faz as três provas do Provedor local a
+ * partir do host, com `fetch` nativo — zero dependência nova. Devolve
+ * `{ reachable, toolUse, contextOk, answered }`.
+ *
+ * Inalcançável (erro de rede ou `/api/tags` não responde) encurta as outras
+ * duas provas para reprovadas: sem alcance não há como testar o resto, e uma
+ * exceção de rede nunca escapa daqui — quem chama sempre recebe um objeto.
+ *
+ * `tool_use` aprova só com bloco `tool_use` no `content` e
+ * `stop_reason: "tool_use"` — chamada emitida como texto solto reprova, ainda
+ * que o modelo anuncie a capacidade.
+ *
+ * O canário de contexto aprova só quando a resposta cita `SENHA_INICIAL` e
+ * não cita `SENHA_FINAL` — citar a senha do fim é a prova de que o começo do
+ * prompt foi cortado.
+ */
+export async function probe(provider, { fetchImpl = fetch } = {}) {
+  const unreachable = { reachable: false, toolUse: false, contextOk: false, answered: null };
+  try {
+    const tags = await fetchImpl(joinUrl(provider.baseUrl, "/api/tags"));
+    if (!tags.ok) return unreachable;
+  } catch {
+    return unreachable;
+  }
+
+  let toolUse = false;
+  try {
+    const toolRes = await postMessages(fetchImpl, provider.baseUrl, {
+      model: provider.model,
+      max_tokens: 64,
+      tools: [TOOL_USE_PROBE_TOOL],
+      messages: [{ role: "user", content: TOOL_USE_PROBE_PROMPT }],
+    });
+    toolUse = toolRes.stop_reason === "tool_use" && (toolRes.content ?? []).some((b) => b.type === "tool_use");
+  } catch {
+    toolUse = false;
+  }
+
+  let contextOk = false;
+  let answered = null;
+  try {
+    const canaryRes = await postMessages(fetchImpl, provider.baseUrl, {
+      model: provider.model,
+      max_tokens: 64,
+      messages: [{ role: "user", content: canaryPrompt() }],
+    });
+    answered = (canaryRes.content ?? []).map((b) => b.text ?? "").join("");
+    contextOk = answered.includes(CANARY_START) && !answered.includes(CANARY_END);
+  } catch {
+    contextOk = false;
+  }
+
+  return { reachable: true, toolUse, contextOk, answered };
+}
+
+/**
+ * Alcance provado de dentro do sandbox, pelo mesmo teste de TCP (`tcpReachable`,
+ * compartilhado com `knowledge-index.probe`) — quem consome o Provedor é o
+ * processo `claude` de dentro, e `probe()` acima só prova o alcance a partir
+ * do host (issue #32: "os dois têm de passar").
+ */
+export async function probeFromSandbox(sandboxName, provider) {
+  const { hostname, port, protocol } = new URL(provider.baseUrl);
+  const resolvedPort = port || (protocol === "https:" ? 443 : 80);
+  const reachable = await tcpReachable(sandboxName, hostname, resolvedPort);
+  return { reachable };
+}
+
+/**
+ * Prosa pro comando que conserta cada uma das três reprovações (CLAUDE.md:
+ * "erro de usuário diz o comando que conserta"). Ordem importa: inalcançável
+ * já reprova as outras duas em `probe()`, então checar alcance primeiro nunca
+ * mostra um conserto de `tool_use`/canário para quem nem chegou lá. Sonda
+ * aprovada em tudo devolve `null` — nenhuma linha pro `doctor` pintar.
+ */
+export function describeDegradation(probeResult) {
+  if (!probeResult.reachable) {
+    return "Provedor local inalcançável. Rode o Ollama do host com OLLAMA_HOST=0.0.0.0 e reinicie o serviço.";
+  }
+  if (!probeResult.toolUse) {
+    return (
+      "Provedor local não emite tool_use estruturado — o modelo escreve a chamada de ferramenta como texto, " +
+      "mesmo anunciando a capacidade. Troque nightProvider.model em .ralph/config.json por um modelo que passe na prova."
+    );
+  }
+  if (!probeResult.contextOk) {
+    return (
+      "Provedor local trunca o prompt em silêncio antes do fim do contexto. Rode o Ollama do host com " +
+      "OLLAMA_CONTEXT_LENGTH=131072 e reinicie o serviço."
+    );
+  }
+  return null;
 }

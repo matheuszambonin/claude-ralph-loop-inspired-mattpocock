@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { execCapture } from "./sandbox.mjs";
+import { execCapture, tcpReachable } from "./sandbox.mjs";
 import { dockerHostAddress, translateLoopback } from "./paths.mjs";
 
 // Carimbo por sandbox, mesmo padrão do `.ralph-bootstrap` em runner.mjs: um
@@ -161,13 +161,7 @@ export async function probe(sandboxName) {
     return { ollamaReachable: value === "reachable" };
   }
 
-  const host = dockerHostAddress();
-  const check = await execCapture(sandboxName, [
-    "bash",
-    "-lc",
-    `timeout 2 bash -c 'exec 3<>/dev/tcp/${host}/${OLLAMA_PORT}' 2>/dev/null`,
-  ]);
-  const ollamaReachable = check.code === 0;
+  const ollamaReachable = await tcpReachable(sandboxName, dockerHostAddress(), OLLAMA_PORT);
 
   await execCapture(sandboxName, ["bash", "-lc", `echo ${ollamaReachable ? "reachable" : "unreachable"} > ${OLLAMA_PROBE_STAMP}`]);
 
