@@ -9,7 +9,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -210,6 +210,24 @@ async function warnIfAuthFailed(state, cfg) {
 }
 
 /**
+ * O teto do ADR-0004 vivia no evento `result` (issue #44): iteração que
+ * morre antes dele — timeout, kill, erro de transporte — perdia o único
+ * sinal que aponta qual iteração destoou. `state.orientationCalls` já vem
+ * de `tool_use`, não de `result`, então lê-lo aqui sobrevive à morte antes
+ * do relatório do mesmo jeito que os outros avisos desta função.
+ *
+ * Amarelo, nunca ligado ao código de saída: o teto protege a economia, não
+ * a correção. A iteração que orientou duas vezes entregou o ticket certo e
+ * custou ~$0,03 a mais — matar um `ralph afk` de 8 iterações por isso é a
+ * troca errada, ainda mais com o operador dormindo.
+ */
+function warnIfOrientationCeilingExceeded(state) {
+  const warning = formatOrientationWarning(state.orientationCalls);
+  if (!warning) return;
+  process.stdout.write(paint(C.yellow, `\n  ${warning}\n`));
+}
+
+/**
  * Aquecer o Provedor local antes da iteração 1 não é falha alta (issue #34,
  * diferente das três provas de `probeProviderBoth`) — a primeira iteração
  * carrega o modelo sozinha, só mais devagar, então isto só avisa.
@@ -287,6 +305,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
 
   warnIfSkillMissing(state, cfg);
   warnIfIndexMcpFailed(state, detected);
+  warnIfOrientationCeilingExceeded(state);
   await warnIfAuthFailed(state, cfg);
 
   if (code !== 0 && !state.finalResult) {

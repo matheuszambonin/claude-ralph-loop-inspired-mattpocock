@@ -146,12 +146,6 @@ export function createStreamRenderer({ onEvent } = {}) {
         process.stdout.write(
           paint(C.dim, `\n  ${state.turns} turnos · ${secs}s · ${cost}\n`)
         );
-        // Amarelo, nunca `code !== 0`: o teto protege a economia, não a
-        // correção. A iteração que orientou duas vezes entregou o ticket
-        // certo e custou ~$0,03 a mais — matar um `ralph afk` de 8 iterações
-        // por isso é a troca errada, ainda mais com o operador dormindo.
-        const warning = formatOrientationWarning(state.orientationCalls);
-        if (warning) process.stdout.write(paint(C.yellow, `  ${warning}\n`));
         break;
       }
     }

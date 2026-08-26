@@ -164,6 +164,23 @@ test("createStreamRenderer: conta as invocações da Orientação, e só as dela
   assert.equal(state.orientationCalls, 2);
 });
 
+test("createStreamRenderer + formatOrientationWarning: iteração que morre antes do `result` ainda avisa (issue #44)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "toolu_1", name: "Agent", input: { subagent_type: "orientation" } },
+        { type: "tool_use", id: "toolu_2", name: "Agent", input: { subagent_type: "orientation" } },
+      ],
+    },
+  });
+  // sem `result`: timeout, kill ou erro de transporte — o caso que a #44 veio consertar.
+  const state = renderer.end();
+  assert.notEqual(formatOrientationWarning(state.orientationCalls), "");
+});
+
 test("createStreamRenderer: estourar o teto avisa, mas não reprova a iteração", () => {
   const renderer = createStreamRenderer();
   feed(renderer, {
