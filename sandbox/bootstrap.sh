@@ -104,12 +104,14 @@ fi
 # O post-commit do repositório alvo mora dentro do workspace montado. Sem
 # neutralizar, ele roda aqui dentro quando o agente commita e regravaria o
 # índice de conhecimento do host com caminho de container — corrompendo o
-# banco que a sessão do host usa (ADR-0002). `core.hooksPath` apontado pra
-# uma pasta vazia vence sem apagar nada do `.git/hooks` do repositório.
+# banco que a sessão do host usa (ADR-0005). Global, não `--local`: o valor
+# vence o `.git/hooks` do alvo sem apagar nada e sem tocar no `.git/config`
+# dele, que é bind mount rw e levaria a neutralização de volta pro host,
+# desligando os hooks do usuário fora do sandbox (fronteira do ADR-0001).
 if [ -n "${RALPH_REPO_PATH:-}" ] && [ -d "$RALPH_REPO_PATH/.git" ]; then
   EMPTY_HOOKS="$CLAUDE_DIR/.ralph-empty-hooks"
   mkdir -p "$EMPTY_HOOKS"
-  git config -C "$RALPH_REPO_PATH" core.hooksPath "$EMPTY_HOOKS"
+  git config --global core.hooksPath "$EMPTY_HOOKS"
   echo "· hooks do repositório alvo neutralizados (core.hooksPath=$EMPTY_HOOKS)"
 fi
 

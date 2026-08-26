@@ -12,6 +12,8 @@ import {
   describeMcpFailure,
   describeInstallFailure,
   withInstallBlock,
+  readTargetMcpConfig,
+  resolveEmbeddingEnv,
   CRG_ID,
 } from "../src/knowledge-index.mjs";
 
@@ -146,6 +148,77 @@ test("render: CRG_OPENAI_BASE_URL já apontado pro host do Docker (ou outro host
 function withCodeReviewGraphDetected() {
   return [{ id: "code-review-graph", label: "code-review-graph", path: "/repo/.code-review-graph/graph.db", updatedAt: new Date() }];
 }
+
+function withMcpJson(root, contents) {
+  writeFileSync(path.join(root, ".mcp.json"), typeof contents === "string" ? contents : JSON.stringify(contents));
+}
+
+test("readTargetMcpConfig: sem .mcp.json devolve objeto vazio", (t) => {
+  const root = tmpRepo(t);
+  assert.deepEqual(readTargetMcpConfig(root), {});
+});
+
+test("readTargetMcpConfig: .mcp.json inválido devolve objeto vazio, sem lançar", (t) => {
+  const root = tmpRepo(t);
+  withMcpJson(root, "{ isso não é json");
+  assert.deepEqual(readTargetMcpConfig(root), {});
+});
+
+test("readTargetMcpConfig: lê o conteúdo quando o arquivo existe e é JSON válido", (t) => {
+  const root = tmpRepo(t);
+  withMcpJson(root, { mcpServers: { [CRG_ID]: { env: { CRG_OPENAI_MODEL: "nomic-embed-text" } } } });
+  assert.deepEqual(readTargetMcpConfig(root), {
+    mcpServers: { [CRG_ID]: { env: { CRG_OPENAI_MODEL: "nomic-embed-text" } } },
+  });
+});
+
+test("resolveEmbeddingEnv: sem .mcp.json e sem override devolve objeto vazio", () => {
+  assert.deepEqual(resolveEmbeddingEnv({}), {});
+});
+
+test("resolveEmbeddingEnv: extrai o env do servidor code-review-graph do .mcp.json do alvo", () => {
+  const targetMcpConfig = {
+    mcpServers: {
+      [CRG_ID]: {
+        env: {
+          CRG_OPENAI_API_KEY: "ollama",
+          CRG_OPENAI_BASE_URL: "http://localhost:11434/v1",
+          CRG_OPENAI_MODEL: "qwen3-embedding:0.6b",
+          CRG_OPENAI_DIMENSION: "1024",
+        },
+      },
+    },
+  };
+  assert.deepEqual(resolveEmbeddingEnv(targetMcpConfig), {
+    CRG_OPENAI_API_KEY: "ollama",
+    CRG_OPENAI_BASE_URL: "http://localhost:11434/v1",
+    CRG_OPENAI_MODEL: "qwen3-embedding:0.6b",
+    CRG_OPENAI_DIMENSION: "1024",
+  });
+});
+
+test("resolveEmbeddingEnv: crgEmbeddingEnv do config vence o .mcp.json do alvo, chave a chave", () => {
+  const targetMcpConfig = {
+    mcpServers: { [CRG_ID]: { env: { CRG_OPENAI_MODEL: "qwen3-embedding:0.6b", CRG_OPENAI_API_KEY: "ollama" } } },
+  };
+  assert.deepEqual(resolveEmbeddingEnv(targetMcpConfig, { CRG_OPENAI_MODEL: "nomic-embed-text" }), {
+    CRG_OPENAI_MODEL: "nomic-embed-text",
+    CRG_OPENAI_API_KEY: "ollama",
+  });
+});
+
+test("resolveEmbeddingEnv: CRG_TOOLS do .mcp.json do alvo nunca chega ao resultado", () => {
+  const targetMcpConfig = {
+    mcpServers: { [CRG_ID]: { env: { CRG_TOOLS: "semantic_search_nodes_tool,query_graph_tool", CRG_OPENAI_MODEL: "x" } } },
+  };
+  assert.deepEqual(resolveEmbeddingEnv(targetMcpConfig), { CRG_OPENAI_MODEL: "x" });
+});
+
+test("resolveEmbeddingEnv: .mcp.json sem o servidor code-review-graph devolve só o override", () => {
+  assert.deepEqual(resolveEmbeddingEnv({ mcpServers: { outro: { env: { X: "1" } } } }, { CRG_OPENAI_MODEL: "y" }), {
+    CRG_OPENAI_MODEL: "y",
+  });
+});
 
 test("render: sem sonda (probe null), a tool de busca semântica fica fora e as outras nove entram", () => {
   const { tools } = render(withCodeReviewGraphDetected(), null);

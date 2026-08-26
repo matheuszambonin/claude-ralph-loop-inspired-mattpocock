@@ -14,6 +14,12 @@ próprio modo de falha silenciosa. Hoje o Ralph não escreve nada no repositóri
 alvo fora de `.ralph/`, e essa fronteira é o que torna seguro apontá-lo para um
 repositório de verdade.
 
+Segurança e custo são a mesma frase aqui. O que a fronteira protege é o índice
+de conhecimento do host, e índice corrompido não dá erro: faz a iteração
+seguinte varrer arquivo, que é a conta que o loop existe para não pagar
+(ADR-0002, ADR-0004). A direção contrária desta fronteira — o sandbox não
+executar o que o alvo carrega — está no ADR-0005.
+
 ## Consequences
 
 Repositório sem índice roda exatamente como antes: a detecção devolve vazio, o

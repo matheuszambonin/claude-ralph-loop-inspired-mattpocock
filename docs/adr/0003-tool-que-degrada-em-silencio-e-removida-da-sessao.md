@@ -24,3 +24,17 @@ Ollama nenhum.
 A lista `CRG_TOOLS` deixa de ser constante e passa a ser derivada de uma sonda
 por sandbox. O `doctor` reporta a degradação em amarelo com a linha exata que a
 desfaz.
+
+A sonda mede o **provedor de embeddings declarado**, não o Ollama: Ollama era o
+caso medido, não a decisão. O endereço sai de `CRG_OPENAI_BASE_URL` — do
+`crgEmbeddingEnv` ou do `.mcp.json` do alvo (ADR-0005) — e a prova é um pedido
+de embedding de verdade, não um teste de porta. Porta aberta não prova nada
+contra provedor remoto: `api.openai.com:443` abre com chave errada, cota
+estourada ou modelo inexistente, e a busca devolve `search_mode: "none"` — a
+mentira que este ADR existe para matar. Um Ollama no ar mas sem o modelo
+baixado falha igual, e o teste de porta também não vê.
+
+Sem provedor declarado em lugar nenhum não há o que provar, e a tool sai: com
+env vazio o servidor cai num default do upstream que o Ralph não verificou, e
+chamar isso de "funciona" é a mesma fé que este ADR recusa quando a sonda não
+responde.

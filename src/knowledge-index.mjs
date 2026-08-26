@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { execCapture } from "./sandbox.mjs";
 import { dockerHostAddress, translateLoopback } from "./paths.mjs";
@@ -175,6 +175,41 @@ export async function probe(sandboxName) {
 }
 
 /**
+ * `.mcp.json` do alvo lido **como dado**, nunca como configuração de sessão
+ * (ADR-0005, "executar não é ler" — `--strict-mcp-config`, sempre presente na
+ * issue #7, já garante que a sessão não roda o que está aqui). Ausente,
+ * inválido ou sem o servidor `code-review-graph`: `{}` — mesmo grau de
+ * silêncio que o resto do módulo usa para degradação (ADR-0003), não uma
+ * exceção por um arquivo que a sessão nem chega a executar.
+ */
+export function readTargetMcpConfig(root) {
+  const file = path.join(root, ".mcp.json");
+  if (!existsSync(file)) return {};
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Env de embeddings do `code-review-graph`: o que o `.mcp.json` do alvo já
+ * declara (issue #20 — medido no Terraços, quatro variáveis, não as três que
+ * `crgEmbeddingEnv` documentava) mais o que o operador sobrescreveu em
+ * `crgEmbeddingEnv`, que vence chave a chave — é o operador corrigindo o que
+ * o `.mcp.json` errar ou não tiver. Pura: recebe os dois lados como dado.
+ *
+ * `CRG_TOOLS`, se presente no `.mcp.json` do alvo, é descartado sempre:
+ * importá-lo em bloco desfaria por variável de ambiente o filtro que a sonda
+ * de Ollama já aplicou (ADR-0003), devolvendo à sessão a tool que ela tinha
+ * removido.
+ */
+export function resolveEmbeddingEnv(targetMcpConfig, override = {}) {
+  const { CRG_TOOLS: _discarded, ...fromTarget } = targetMcpConfig?.mcpServers?.[CRG_ID]?.env ?? {};
+  return { ...fromTarget, ...override };
+}
+
+/**
  * Comando MCP efêmero do `code-review-graph` (`serve`, documentado no README
  * upstream) — `--repo` recebe o caminho já traduzido pro container por quem
  * chama, nunca o do host (ADR-0002), e `--tools` a lista que a sonda de
@@ -185,8 +220,9 @@ export async function probe(sandboxName) {
  * provedor de embeddings do `code-review-graph` (`CRG_OPENAI_API_KEY` +
  * `CRG_OPENAI_BASE_URL` + `CRG_OPENAI_MODEL`, verificado no código upstream)
  * são segredo e modelo que só o operador sabe — Ralph não inventa nenhum dos
- * dois, só traduz o endereço de loopback de `CRG_OPENAI_BASE_URL` quando o
- * operador declarou um em `crgEmbeddingEnv`.
+ * dois, só traduz o endereço de loopback de `CRG_OPENAI_BASE_URL`, venha ele
+ * do `.mcp.json` do alvo ou de `crgEmbeddingEnv` (`resolveEmbeddingEnv` já
+ * resolveu os dois antes de chegar aqui).
  */
 function mcpServerFor(id, containerRoot, tools, embeddingEnv) {
   if (id !== CRG_ID || !tools.length) return null;

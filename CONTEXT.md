@@ -5,6 +5,24 @@ conceito geral de programação não entra aqui, mesmo que o código use muito.
 
 ## Language
 
+**Repositório alvo**:
+O repositório em que o loop trabalha, sempre outro que não o do Ralph. Existe
+antes do Ralph e é curado à mão para as sessões que rodam no host; o Ralph se
+adapta a ele, nunca o contrário.
+_Avoid_: projeto, repo do usuário, workspace
+
+**Sandbox**:
+O container descartável onde uma iteração roda. É a unidade de invalidação do
+que o Ralph configura para si mesmo: essa configuração vive dentro dele e morre
+com ele.
+_Avoid_: container, ambiente, box
+
+**Configuração executável do alvo**:
+O que o repositório alvo carrega e que o git ou o Claude Code rodam sozinhos,
+sem ninguém mandar — hooks e servidores MCP. O sandbox nunca a executa; lê-la
+como dado é outra coisa, e é permitido.
+_Avoid_: herança, config do repo, hooks
+
 **Índice de conhecimento**:
 Estrutura pré-computada sobre o repositório alvo que responde "onde está X" e
 "o que X toca" sem ler os arquivos. Existe antes do Ralph e independe dele.

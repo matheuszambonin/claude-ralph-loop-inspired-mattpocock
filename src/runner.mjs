@@ -19,6 +19,8 @@ import {
   probe as probeKnowledgeIndex,
   needsOllamaProbe,
   describeMcpFailure,
+  readTargetMcpConfig,
+  resolveEmbeddingEnv,
 } from "./knowledge-index.mjs";
 import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
 
@@ -231,7 +233,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   const probeResult = needsOllamaProbe(detected) ? await probeKnowledgeIndex(cfg.sandboxName) : null;
   const { mcpConfig, tools } = renderKnowledgeIndex(detected, probeResult, {
     containerRoot: workdir,
-    embeddingEnv: cfg.crgEmbeddingEnv,
+    embeddingEnv: resolveEmbeddingEnv(readTargetMcpConfig(root), cfg.crgEmbeddingEnv),
   });
   const mcpArgs = mcpConfig ? ["--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config"] : ["--strict-mcp-config"];
 

@@ -19,9 +19,9 @@ existe para evitar.
 
 ## Consequences
 
-O `post-commit` do repositório alvo mora no repositório montado e roda dentro do
-container quando o agente commita. Com o binário do índice instalado lá, ele
-regravaria o banco compartilhado com caminhos de container, corrompendo o índice
-que o host usa. Por isso os hooks do alvo são neutralizados dentro do sandbox
-(`core.hooksPath` para um diretório vazio) — consequência mecânica desta decisão,
-não decisão à parte.
+O `.mcp.json` do alvo deixar de ser lido pela sessão e o `post-commit` dele
+deixar de rodar dentro do container são o mesmo movimento, e viraram decisão
+própria: ver ADR-0005 — inclusive para o escopo da neutralização, que é o que
+impede a correção óbvia de vazar de volta para o host. Aqui fica só o que é do
+índice: o `--mcp-config` efêmero existe porque o servidor precisa de caminho de
+container e de um endereço que alcance o host.
