@@ -210,9 +210,9 @@ const EMBEDDING_PROBE_SCRIPT = [
  * Qualquer falha — rede, timeout, HTTP não-2xx, corpo sem embedding — reprova;
  * a exceção nunca escapa daqui, e quem chama sempre recebe um booleano.
  */
-async function requestEmbedding(sandboxName, target) {
+async function requestEmbedding(sandboxName, target, execImpl) {
   const url = `${target.baseUrl.replace(/\/$/, "")}/embeddings`;
-  const result = await execCapture(sandboxName, ["node", "-e", EMBEDDING_PROBE_SCRIPT], {
+  const result = await execImpl(sandboxName, ["node", "-e", EMBEDDING_PROBE_SCRIPT], {
     stdin: JSON.stringify({ url, model: target.model, apiKey: target.apiKey }),
   });
   return result.stdout.trim() === "yes";
@@ -228,19 +228,24 @@ async function requestEmbedding(sandboxName, target) {
  * `embeddingTarget` ausente (sem `CRG_OPENAI_MODEL` declarado em lugar
  * nenhum) devolve reprovado sem tocar sandbox nem carimbo — não há o que
  * provar.
+ *
+ * `execImpl` injetável (issue #43), mesmo padrão de `probeFromSandbox` em
+ * `provider.mjs`: o executor real (`execCapture`) é o padrão, e os testes
+ * injetam um substituto para provar a sequência do carimbo sem sandbox de
+ * verdade.
  */
-export async function probe(sandboxName, embeddingEnv = {}) {
+export async function probe(sandboxName, embeddingEnv = {}, { execImpl = execCapture } = {}) {
   const target = embeddingTarget(embeddingEnv);
   if (!target) return { reachable: false, address: null, isOllama: false };
 
-  const cached = await execCapture(sandboxName, ["cat", EMBEDDING_PROBE_STAMP]);
+  const cached = await execImpl(sandboxName, ["cat", EMBEDDING_PROBE_STAMP]);
   const value = cached.stdout.trim();
   if (cached.code === 0 && (value === "reachable" || value === "unreachable")) {
     return { reachable: value === "reachable", address: target.baseUrl, isOllama: target.isOllama };
   }
 
-  const reachable = await requestEmbedding(sandboxName, target);
-  await execCapture(sandboxName, ["bash", "-lc", `echo ${reachable ? "reachable" : "unreachable"} > ${EMBEDDING_PROBE_STAMP}`]);
+  const reachable = await requestEmbedding(sandboxName, target, execImpl);
+  await execImpl(sandboxName, ["bash", "-lc", `echo ${reachable ? "reachable" : "unreachable"} > ${EMBEDDING_PROBE_STAMP}`]);
 
   return { reachable, address: target.baseUrl, isOllama: target.isOllama };
 }

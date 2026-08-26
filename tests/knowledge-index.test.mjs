@@ -15,6 +15,7 @@ import {
   readTargetMcpConfig,
   resolveEmbeddingEnv,
   embeddingTarget,
+  probe,
   CRG_ID,
 } from "../src/knowledge-index.mjs";
 
@@ -472,4 +473,77 @@ test("withInstallBlock: preserva o conteúdo do usuário fora do bloco gerado", 
   const out = withInstallBlock(custom, withCodeReviewGraphDetected());
   assert.match(out, /-e "\.\[dev\]"/);
   assert.match(out, /pip install --quiet --break-system-packages code-review-graph/);
+});
+
+// --- probe: executor injetável e sequência do carimbo (issue #43) ---
+
+const EMBEDDING_ENV = { CRG_OPENAI_MODEL: "qwen3-embedding:0.6b" };
+
+/**
+ * Executor injetado com estado de carimbo próprio — imita o sandbox real o
+ * bastante para provar a sequência (`cat` lê, `node -e` sonda, `bash -lc`
+ * grava) sem precisar de um sandbox de verdade.
+ */
+function fakeSandboxExec({ stamp = null, requestResult = "yes" } = {}) {
+  const calls = [];
+  let currentStamp = stamp;
+  const execImpl = async (name, argv) => {
+    calls.push({ name, argv });
+    if (argv[0] === "cat") {
+      return currentStamp === null ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: currentStamp, stderr: "" };
+    }
+    if (argv[0] === "node") {
+      return { code: 0, stdout: requestResult, stderr: "" };
+    }
+    if (argv[0] === "bash") {
+      currentStamp = argv[2].includes("echo reachable") ? "reachable" : "unreachable";
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    throw new Error(`chamada inesperada: ${argv[0]}`);
+  };
+  return { calls, execImpl, getStamp: () => currentStamp };
+}
+
+test("probe: carimbo válido devolve o resultado gravado sem disparar pedido de embedding novo", async () => {
+  const { calls, execImpl } = fakeSandboxExec({ stamp: "reachable" });
+  const result = await probe("sbx", EMBEDDING_ENV, { execImpl });
+  assert.equal(result.reachable, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].argv[0], "cat");
+});
+
+test("probe: carimbo ausente dispara a sonda e grava o resultado", async () => {
+  const { calls, execImpl, getStamp } = fakeSandboxExec({ stamp: null, requestResult: "yes" });
+  const result = await probe("sbx", EMBEDDING_ENV, { execImpl });
+  assert.equal(result.reachable, true);
+  assert.deepEqual(
+    calls.map((c) => c.argv[0]),
+    ["cat", "node", "bash"]
+  );
+  assert.equal(getStamp(), "reachable");
+});
+
+test("probe: carimbo com conteúdo inesperado é tratado como ausente", async () => {
+  const { calls, execImpl } = fakeSandboxExec({ stamp: "garbage", requestResult: "no" });
+  const result = await probe("sbx", EMBEDDING_ENV, { execImpl });
+  assert.equal(result.reachable, false);
+  assert.deepEqual(
+    calls.map((c) => c.argv[0]),
+    ["cat", "node", "bash"]
+  );
+});
+
+test("probe: alvo sem modelo de embedding declarado não toca sandbox nem carimbo", async () => {
+  const { calls, execImpl } = fakeSandboxExec();
+  const result = await probe("sbx", {}, { execImpl });
+  assert.deepEqual(result, { reachable: false, address: null, isOllama: false });
+  assert.equal(calls.length, 0);
+});
+
+test("probe: sonda malsucedida grava carimbo unreachable e devolve endereço/isOllama do alvo", async () => {
+  const { execImpl } = fakeSandboxExec({ stamp: null, requestResult: "no" });
+  const result = await probe("sbx", EMBEDDING_ENV, { execImpl });
+  assert.equal(result.reachable, false);
+  assert.equal(result.isOllama, true);
+  assert.match(result.address, /:11434\/v1$/);
 });
