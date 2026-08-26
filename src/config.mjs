@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { sandboxNameFor } from "./paths.mjs";
+import { sandboxNameFor, dockerHostAddress } from "./paths.mjs";
 
 export const DEFAULTS = {
   /** Modelo de cada iteração. Sonnet é o padrão: Ralph vive de muitas
@@ -41,6 +41,31 @@ export const DEFAULTS = {
   crgEmbeddingEnv: {},
   /** Segundos de espera entre iterações do AFK. */
   cooldownSeconds: 0,
+  /** Provedor local (Ollama) para `--night` (issue #29/#40) — padrão validado
+   *  nas três provas contra a máquina de referência do épico, não um chute.
+   *  Único campo aninhado com padrão não-vazio: `loadConfig` o mescla um
+   *  nível fundo, então declarar só um campo aqui não perde os outros. */
+  nightProvider: {
+    // de dentro do sandbox; loopback (127.0.0.1/localhost) é traduzido pro
+    // host do Docker automaticamente, então o operador escreve o endereço
+    // como se estivesse fora do container.
+    baseUrl: `http://${dockerHostAddress()}:11434`,
+    // tag da iteração — a única que passou nas três provas na máquina de
+    // referência (issue #29, "O que foi medido, e onde").
+    model: "qwen3-coder:30b-a3b-q4_K_M",
+    // null = a Orientação herda o modelo acima (ADR-0007); declare uma tag
+    // menor aqui só para a fase que lê e relata.
+    orientationModel: null,
+    // por quanto tempo o Ollama mantém o modelo residente entre iterações;
+    // "8h" cobre uma noite inteira e expira sozinho, sem nada persistente
+    // escrito no host (issue #34).
+    keepAlive: "8h",
+    // tamanho do prompt que o canário de contexto do doctor precisa provar
+    // sem truncar — o modo de falha mais perigoso do Ollama é cortar o
+    // prompt em silêncio e responder com confiança sobre o pedaço que
+    // sobrou; baixar este valor é aceitar explicitamente menos contexto.
+    minContext: 131072,
+  },
 };
 
 export function ralphDir(root) {
@@ -62,6 +87,11 @@ export function loadConfig(root) {
     }
   }
   const cfg = { ...DEFAULTS, ...user };
+  // `nightProvider` é o primeiro campo aninhado com padrão não-vazio — merge
+  // raso perderia baseUrl/keepAlive/minContext quando o operador só declara
+  // `model`. Caso especial enquanto for o único (issue #40); generalizar
+  // antes de existir um segundo campo assim é preparo para ninguém.
+  cfg.nightProvider = { ...DEFAULTS.nightProvider, ...user.nightProvider };
   cfg.sandboxName ||= sandboxNameFor(root);
   return cfg;
 }

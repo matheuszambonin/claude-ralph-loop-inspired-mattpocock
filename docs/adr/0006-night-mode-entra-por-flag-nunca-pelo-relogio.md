@@ -4,6 +4,11 @@
 A mesma linha de comando produz o mesmo Provedor às três da tarde e às três da
 manhã. O Ralph não lê o relógio para decidir quem pensa.
 
+`ralph doctor --night` (issue #40) segue o mesmo princípio aplicado à
+inspeção: o gate das três provas do Provedor é a flag, não a presença de
+`nightProvider` no config — desde que o padrão passou a morar em `DEFAULTS`,
+"configurou" e "quer as provas agora" deixaram de ser a mesma coisa.
+
 ## Considered Options
 
 A troca automática por horário é o desenho óbvio — o modo se chama night mode, a

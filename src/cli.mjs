@@ -164,7 +164,7 @@ function cmdInit(flags) {
 }
 
 // ------------------------------------------------------------------- doctor --
-async function cmdDoctor() {
+async function cmdDoctor(flags) {
   const cfg = loadConfig(root);
   const ok = (m) => process.stdout.write(`${paint(C.green, "✓")} ${m}\n`);
   const warn = (m) => process.stdout.write(`${paint(C.yellow, "!")} ${m}\n`);
@@ -229,11 +229,11 @@ async function cmdDoctor() {
     degradation ? warn(degradation) : ok(describeKnowledgeIndexAvailability(detectedIndexes));
   }
 
-  // Night mode (issue #33): sem nightProvider no config, nenhuma linha nova
-  // e nenhuma chamada de rede — o operador que não configurou não paga por
-  // isso. Mesmas três provas que `prepare()` roda antes da iteração 1
-  // (issue #32), só que aqui em segundos, antes do loop existir.
-  if (cfg.nightProvider != null) {
+  // Night mode (issue #33/#40): o gate é a flag explícita `--night`, não a
+  // presença de `nightProvider` no config — desde a issue #40 o padrão mora
+  // em DEFAULTS, então "configurou" e "quer as provas agora" deixaram de ser
+  // a mesma coisa. Sem a flag: nenhuma linha nova, nenhuma chamada de rede.
+  if (flags.night) {
     const provider = resolveProvider(cfg, { night: true });
     const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
     const degradation = describeProviderDegradation(probeResult);
@@ -469,7 +469,7 @@ ${paint(C.bold, "ralph")} — loop Ralph Wiggum para Claude Code, um contexto no
 
 ${paint(C.bold, "Comandos")}
   init [--prompt <nome>] [--force]   cria .ralph/ neste repo
-  doctor                             checa docker, sandbox, login, plugins, tarefas
+  doctor [--night]                   checa docker, sandbox, login, plugins, tarefas
   login [--share-credentials]        autentica o Claude dentro do sandbox
   gh-login [--token[=valor]]         autentica o gh dentro do sandbox
   once [--allow-branch]              UMA iteração, você assistindo (HITL)
@@ -502,7 +502,7 @@ const { flags } = parseArgs(rest);
 
 const commands = {
   init: () => cmdInit(flags),
-  doctor: cmdDoctor,
+  doctor: () => cmdDoctor(flags),
   login: () => cmdLogin(flags),
   "gh-login": () => cmdGhLogin(flags),
   once: () => cmdOnce(flags),

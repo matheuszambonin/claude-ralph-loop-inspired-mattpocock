@@ -1,21 +1,5 @@
-import { dockerHostAddress, translateLoopback } from "./paths.mjs";
+import { translateLoopback } from "./paths.mjs";
 import { tcpReachable } from "./sandbox.mjs";
-
-/**
- * Padrão do Provedor local (issue #29, "O que foi medido, e onde"): tag
- * validada nas três provas do Ollama contra a máquina de referência do
- * documento da épica — não um chute. `orientationModel: null` = a Orientação
- * herda o modelo da iteração (ADR-0007: um Provedor por processo, dois
- * modelos possíveis dentro dele).
- */
-export const DEFAULT_NIGHT_PROVIDER = {
-  baseUrl: `http://${dockerHostAddress()}:11434`,
-  model: "qwen3-coder:30b-a3b-q4_K_M",
-  orientationModel: null,
-  // Padrão cobre uma noite inteira (issue #34) — expira sozinho no Ollama,
-  // nada persistente é escrito.
-  keepAlive: "8h",
-};
 
 /**
  * Pura: config e a flag `--night` entram, o Provedor resolvido sai. Espelha
@@ -25,22 +9,25 @@ export const DEFAULT_NIGHT_PROVIDER = {
  * `cfg.orientationModel`, os dois campos que já existiam antes desta issue
  * (ADR-0004) — para que um loop sem a flag não mude de comportamento.
  *
- * Com `night`, mescla `cfg.nightProvider` sobre `DEFAULT_NIGHT_PROVIDER`
- * (`cfg.nightProvider` ausente cai inteiro no padrão, sem lançar) e traduz o
- * endereço de loopback pro host do Docker — o operador que escreve
- * `127.0.0.1` no config não fica apontando pro próprio container.
+ * Com `night`, lê `cfg.nightProvider` direto — `loadConfig` já o mescla com
+ * `DEFAULTS.nightProvider` um nível fundo (issue #40: o padrão do Provedor
+ * mora só em `config.mjs`, `resolve` não carrega fallback próprio) — e
+ * traduz o endereço de loopback pro host do Docker, porque o operador que
+ * escreve `127.0.0.1` no config não deve ficar apontando pro próprio
+ * container.
  */
 export function resolve(cfg, { night = false } = {}) {
   if (!night) {
     return { kind: "anthropic", baseUrl: null, model: cfg.model, orientationModel: cfg.orientationModel };
   }
-  const provider = { ...DEFAULT_NIGHT_PROVIDER, ...cfg.nightProvider };
+  const provider = cfg.nightProvider;
   return {
     kind: "local",
     baseUrl: translateLoopback(provider.baseUrl),
     model: provider.model,
     orientationModel: provider.orientationModel ?? provider.model,
     keepAlive: provider.keepAlive,
+    minContext: provider.minContext,
   };
 }
 
@@ -220,8 +207,13 @@ export async function preload(provider, { fetchImpl = fetch } = {}) {
  * o modelo é nomeado porque trocar `nightProvider.model` é a ação que o
  * operador tem disponível (a mesma correção que a issue #13 fez para a busca
  * semântica: nomear o processo só onde isso é acionável).
+ *
+ * `null` para o Provedor da API paga (issue #40) — a garantia de que a saída
+ * do `doctor` sem night mode fica idêntica à de hoje vive aqui, na função
+ * pura, e não só no gate do comando.
  */
 export function describeAvailability(provider) {
+  if (provider.kind !== "local") return null;
   return `Provedor local disponível (modelo ${provider.model})`;
 }
 

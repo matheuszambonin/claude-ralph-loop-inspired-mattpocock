@@ -8,11 +8,21 @@ import {
   preload,
   describeAvailability,
   describeDegradation,
-  DEFAULT_NIGHT_PROVIDER,
 } from "../src/provider.mjs";
+import { DEFAULTS } from "../src/config.mjs";
 
+// `resolve` não carrega padrão próprio desde a issue #40 — quem monta o cfg
+// de teste tem que refletir o que `loadConfig` de fato entrega (DEFAULTS com
+// `nightProvider` mesclado um nível fundo), não um literal parcial.
 function baseCfg(overrides = {}) {
-  return { model: "sonnet", orientationModel: "haiku", ...overrides };
+  const { nightProvider, ...rest } = overrides;
+  return {
+    ...DEFAULTS,
+    model: "sonnet",
+    orientationModel: "haiku",
+    ...rest,
+    nightProvider: { ...DEFAULTS.nightProvider, ...nightProvider },
+  };
 }
 
 test("resolve: sem night, devolve Provedor anthropic com os modelos de hoje", () => {
@@ -50,7 +60,7 @@ test("resolve: com night --model <tag> (já mesclado em cfg.nightProvider.model 
 
 test("resolve: com night e nightProvider ausente do config, cai nos padrões sem lançar", () => {
   assert.doesNotThrow(() => resolve(baseCfg(), { night: true }));
-  assert.equal(resolve(baseCfg(), { night: true }).model, DEFAULT_NIGHT_PROVIDER.model);
+  assert.equal(resolve(baseCfg(), { night: true }).model, DEFAULTS.nightProvider.model);
 });
 
 test("resolve: com night, endereço de loopback do config é traduzido pro host do Docker", () => {
@@ -60,12 +70,17 @@ test("resolve: com night, endereço de loopback do config é traduzido pro host 
 
 test("resolve: com night e keepAlive ausente do config, o padrão cobre uma noite inteira", () => {
   const provider = resolve(baseCfg({ nightProvider: { model: "qwen3-coder:30b" } }), { night: true });
-  assert.equal(provider.keepAlive, DEFAULT_NIGHT_PROVIDER.keepAlive);
+  assert.equal(provider.keepAlive, DEFAULTS.nightProvider.keepAlive);
 });
 
 test("resolve: com night e keepAlive declarado no config, o valor do operador vence o padrão", () => {
   const cfg = baseCfg({ nightProvider: { model: "qwen3-coder:30b", keepAlive: "30m" } });
   assert.equal(resolve(cfg, { night: true }).keepAlive, "30m");
+});
+
+test("resolve: com night, minContext sai junto dos outros campos do Provedor", () => {
+  const cfg = baseCfg({ nightProvider: { minContext: 65536 } });
+  assert.equal(resolve(cfg, { night: true }).minContext, 65536);
 });
 
 test("renderEnv: Provedor anthropic devolve objeto vazio", () => {
@@ -185,10 +200,15 @@ test("preload: fetchImpl que lança (porta fechada) devolve false sem propagar e
 });
 
 test("describeAvailability: nomeia o Provedor local e o modelo, não o Ollama", () => {
-  const msg = describeAvailability(resolve({ nightProvider: { model: "qwen3-coder:30b" } }, { night: true }));
+  const cfg = baseCfg({ nightProvider: { model: "qwen3-coder:30b" } });
+  const msg = describeAvailability(resolve(cfg, { night: true }));
   assert.match(msg, /Provedor local/);
   assert.match(msg, /qwen3-coder:30b/);
   assert.doesNotMatch(msg, /Ollama/i);
+});
+
+test("describeAvailability: Provedor anthropic não produz linha nenhuma", () => {
+  assert.equal(describeAvailability(resolve(baseCfg(), { night: false })), null);
 });
 
 test("describeDegradation: sonda aprovada em tudo devolve null", () => {

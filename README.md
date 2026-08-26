@@ -244,13 +244,17 @@ no mesmo Provedor — `ANTHROPIC_BASE_URL` é variável de processo, não de fas
     "orientationModel": null,
     // por quanto tempo o Ollama mantém o modelo residente; "8h" cobre uma
     // noite inteira e expira sozinho, sem nada persistente escrito
-    "keepAlive": "8h"
+    "keepAlive": "8h",
+    // tamanho do prompt que o canário de contexto do doctor precisa provar
+    // sem truncar; baixe este valor para aceitar explicitamente menos contexto
+    "minContext": 131072
   }
 }
 ```
 
-Sem `nightProvider` no config, `--night` cai no bloco acima inteiro — o
-operador só escreve o que quer trocar.
+O bloco inteiro mora em `DEFAULTS` — sem `nightProvider` no config, `--night`
+usa o padrão acima; declarar só um campo (ex.: `{"nightProvider": {"model":
+"..."}}`) herda o resto do bloco, sem precisar repeti-lo.
 
 ### O que precisa estar de pé no host
 
@@ -271,10 +275,14 @@ responsabilidade do operador — não há `ralph index build` equivalente aqui.
 ### Fluxo recomendado
 
 ```bash
-ralph doctor              # roda as três provas do Provedor local antes de gastar tempo de máquina
+ralph doctor --night      # roda as três provas do Provedor local antes de gastar tempo de máquina
 ralph once --night        # uma iteração assistida — aprenda como o modelo escolhido se comporta
 ralph afk -n 20 --night   # o loop, sem supervisão
 ```
+
+`--night` no `doctor` é a mesma flag explícita de `once`/`afk` (ADR-0006): sem
+ela, a saída fica idêntica à de sempre, mesmo com `nightProvider` no config —
+o sinal de "quero as provas agora" é pedir, não ter configurado.
 
 `ralph doctor` roda as mesmas três provas que a primeira iteração de um
 `--night` roda sozinha, só que em segundos, antes do loop existir: **alcance**
@@ -323,7 +331,7 @@ partir do config.
 | Comando | O que faz |
 |---|---|
 | `ralph init [--prompt <nome>] [--force]` | cria `.ralph/` no repo atual |
-| `ralph doctor` | checa docker, sandbox, plugins, login e fonte de tarefas |
+| `ralph doctor [--night]` | checa docker, sandbox, plugins, login e fonte de tarefas (com `--night`, também o Provedor local) |
 | `ralph login [--share-credentials]` | autentica o Claude dentro do sandbox |
 | `ralph gh-login [--token[=valor]]` | autentica o `gh` dentro do sandbox |
 | `ralph once [--allow-branch] [--night]` | uma iteração (HITL) |
