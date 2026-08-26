@@ -172,48 +172,63 @@ export function embeddingTarget(embeddingEnv = {}) {
   };
 }
 
-// Lido via stdin pelo script abaixo, nunca interpolado no argv do `node -e`
-// — mesma convenção que `cmdGhLogin`/`cmdLogin` já seguem em cli.mjs para não
-// deixar segredo em texto claro no argv do processo (`docker top`, `ps aux`,
-// `/proc/<pid>/cmdline` dentro do sandbox enxergariam).
+// `curl`, não o `fetch` nativo do Node via `node -e` (issue #47) — o `fetch`
+// do Node (undici) ignora `HTTP_PROXY`/`HTTPS_PROXY` e abre socket direto, e o
+// `docker sandbox` força todo o tráfego por um proxy MITM: a sonda reprovava
+// sempre, não importa se o provedor declarado estava de pé. Mesmo remédio que
+// `provider.probeFromSandbox` já aplicou na #46. `curl` só prova alcance
+// (código de saída); o corpo da resposta ainda precisa ser lido para provar
+// que veio um embedding de verdade (um provedor com chave inválida pode
+// devolver 200 com corpo de erro) — por isso o corpo vai por stdin a um
+// segundo `node -e` que só faz `JSON.parse`, sem tocar rede. `jq` não está
+// garantido na imagem do template; `node` está (é quem roda `claude`).
+//
+// A chave (`CRG_OPENAI_API_KEY`) chega pelo stdin do processo `bash` (lida
+// com `cat` antes do `curl`) e nunca vira argumento de nenhum processo —
+// mesma convenção que `cmdGhLogin`/`cmdLogin` já seguem em cli.mjs para não
+// deixar segredo em texto claro no argv (`docker top`, `ps aux`,
+// `/proc/<pid>/cmdline` dentro do sandbox enxergariam). Passá-la como `-H
+// "authorization: Bearer $apikey"` no argv do próprio `curl` reabriria o
+// mesmo buraco um processo abaixo — por isso o header vai para o `curl` via
+// `-H @-`, que lê o valor do stdin dele (um here-string do `bash`, resolvido
+// dentro do próprio interpretador, sem novo processo com a chave em argv).
+// URL e corpo da requisição (modelo + texto fixo do probe, nenhum segredo)
+// vão como argumentos posicionais (`$1`, `$2`), nunca interpolados no script.
 const EMBEDDING_PROBE_SCRIPT = [
-  "let input = '';",
-  "process.stdin.on('data', (d) => (input += d));",
-  "process.stdin.on('end', async () => {",
-  "  const { url, model, apiKey } = JSON.parse(input);",
-  "  const headers = { 'content-type': 'application/json' };",
-  "  if (apiKey) headers.authorization = 'Bearer ' + apiKey;",
+  "apikey=$(cat)",
+  'if [ -n "$apikey" ]; then',
+  '  body=$(curl -fsS --max-time 5 -X POST "$1" -H "content-type: application/json" -H @- --data "$2" <<< "authorization: Bearer $apikey") || { printf no; exit 0; }',
+  "else",
+  '  body=$(curl -fsS --max-time 5 -X POST "$1" -H "content-type: application/json" --data "$2") || { printf no; exit 0; }',
+  "fi",
+  "printf %s \"$body\" | node -e '",
+  'let input = "";',
+  'process.stdin.on("data", (d) => (input += d));',
+  'process.stdin.on("end", () => {',
   "  try {",
-  "    const res = await fetch(url, {",
-  "      method: 'POST',",
-  "      signal: AbortSignal.timeout(5000),",
-  "      headers,",
-  "      body: JSON.stringify({ model, input: 'ralph-probe' }),",
-  "    });",
-  "    if (!res.ok) { process.stdout.write('no'); return; }",
-  "    const body = await res.json();",
-  "    const embedding = body?.data?.[0]?.embedding;",
-  "    process.stdout.write(Array.isArray(embedding) && embedding.length > 0 ? 'yes' : 'no');",
-  "  } catch { process.stdout.write('no'); }",
+  '    const body = JSON.parse(input);',
+  '    const embedding = body?.data?.[0]?.embedding;',
+  '    process.stdout.write(Array.isArray(embedding) && embedding.length > 0 ? "yes" : "no");',
+  '  } catch { process.stdout.write("no"); }',
   "});",
+  "'",
 ].join("\n");
 
 /**
  * Pedido de embedding de verdade, de dentro do sandbox (issue #19) — é quem
- * de fato consulta o provedor durante a iteração, com o `fetch` nativo do
- * Node via `node -e` (mesma técnica de script inline que `bootstrap.sh` já
- * usa, zero dependência nova). Substitui o teste de porta puro: TCP aberto
- * não prova que o provedor responde — um Ollama vivo sem o modelo baixado, ou
- * um provedor remoto com chave inválida, abrem a porta e mentiriam que a
- * busca funciona (ADR-0003).
+ * de fato consulta o provedor durante a iteração. Substitui o teste de porta
+ * puro: TCP aberto não prova que o provedor responde — um Ollama vivo sem o
+ * modelo baixado, ou um provedor remoto com chave inválida, abrem a porta e
+ * mentiriam que a busca funciona (ADR-0003).
  *
  * Qualquer falha — rede, timeout, HTTP não-2xx, corpo sem embedding — reprova;
  * a exceção nunca escapa daqui, e quem chama sempre recebe um booleano.
  */
 async function requestEmbedding(sandboxName, target, execImpl) {
   const url = `${target.baseUrl.replace(/\/$/, "")}/embeddings`;
-  const result = await execImpl(sandboxName, ["node", "-e", EMBEDDING_PROBE_SCRIPT], {
-    stdin: JSON.stringify({ url, model: target.model, apiKey: target.apiKey }),
+  const body = JSON.stringify({ model: target.model, input: "ralph-probe" });
+  const result = await execImpl(sandboxName, ["bash", "-lc", EMBEDDING_PROBE_SCRIPT, "ralph-embedding-probe", url, body], {
+    stdin: target.apiKey,
   });
   return result.stdout.trim() === "yes";
 }

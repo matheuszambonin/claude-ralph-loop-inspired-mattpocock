@@ -173,11 +173,11 @@ export async function probe(provider, { fetchImpl = fetch } = {}) {
  * responde a TCP direto é o próprio proxy — `/dev/tcp` reprovava qualquer
  * endereço, inclusive um Ollama que o `curl` de dentro alcançava com 200. O
  * `curl` respeita `HTTP_PROXY`/`HTTPS_PROXY`, então mede o caminho que o
- * consumidor real percorre. É ele e não o `fetch` do Node (que a sonda de
- * embeddings usa) porque o `fetch` ignora as duas variáveis e abre socket
- * direto — medido de dentro do sandbox, falha contra o mesmo endereço que o
- * `curl` alcança. Nada novo entra no `bootstrap.sh`: a imagem do template já
- * traz `/usr/bin/curl`.
+ * consumidor real percorre. É ele e não o `fetch` nativo do Node (que a sonda
+ * de embeddings usava até a issue #47, mesmo remédio aplicado lá também)
+ * porque o `fetch` ignora as duas variáveis e abre socket direto — medido de
+ * dentro do sandbox, falha contra o mesmo endereço que o `curl` alcança. Nada
+ * novo entra no `bootstrap.sh`: a imagem do template já traz `/usr/bin/curl`.
  *
  * Teto de 5s, não os 2s que o `timeout` do TCP dava: o pedido agora atravessa
  * o proxy antes de chegar ao Provedor — mesmo teto que a sonda de embeddings

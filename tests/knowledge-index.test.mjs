@@ -479,20 +479,25 @@ test("withInstallBlock: preserva o conteúdo do usuário fora do bloco gerado", 
 
 const EMBEDDING_ENV = { CRG_OPENAI_MODEL: "qwen3-embedding:0.6b" };
 
+/** Chamada `bash -lc` que roda a sonda de embedding (issue #47), não a que grava o carimbo — as duas se distinguem pelo conteúdo do script, não pela contagem de argumentos. */
+function isEmbeddingRequestCall(argv) {
+  return argv[0] === "bash" && argv[2]?.includes("curl");
+}
+
 /**
  * Executor injetado com estado de carimbo próprio — imita o sandbox real o
- * bastante para provar a sequência (`cat` lê, `node -e` sonda, `bash -lc`
- * grava) sem precisar de um sandbox de verdade.
+ * bastante para provar a sequência (`cat` lê, `bash -lc` com `curl` sonda,
+ * `bash -lc` grava) sem precisar de um sandbox de verdade.
  */
 function fakeSandboxExec({ stamp = null, requestResult = "yes" } = {}) {
   const calls = [];
   let currentStamp = stamp;
-  const execImpl = async (name, argv) => {
-    calls.push({ name, argv });
+  const execImpl = async (name, argv, opts) => {
+    calls.push({ name, argv, opts });
     if (argv[0] === "cat") {
       return currentStamp === null ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: currentStamp, stderr: "" };
     }
-    if (argv[0] === "node") {
+    if (isEmbeddingRequestCall(argv)) {
       return { code: 0, stdout: requestResult, stderr: "" };
     }
     if (argv[0] === "bash") {
@@ -518,7 +523,7 @@ test("probe: carimbo ausente dispara a sonda e grava o resultado", async () => {
   assert.equal(result.reachable, true);
   assert.deepEqual(
     calls.map((c) => c.argv[0]),
-    ["cat", "node", "bash"]
+    ["cat", "bash", "bash"]
   );
   assert.equal(getStamp(), "reachable");
 });
@@ -529,7 +534,7 @@ test("probe: carimbo com conteúdo inesperado é tratado como ausente", async ()
   assert.equal(result.reachable, false);
   assert.deepEqual(
     calls.map((c) => c.argv[0]),
-    ["cat", "node", "bash"]
+    ["cat", "bash", "bash"]
   );
 });
 
@@ -546,4 +551,47 @@ test("probe: sonda malsucedida grava carimbo unreachable e devolve endereço/isO
   assert.equal(result.reachable, false);
   assert.equal(result.isOllama, true);
   assert.match(result.address, /:11434\/v1$/);
+});
+
+// --- sonda usa curl, não o fetch do Node, para respeitar o proxy do docker sandbox (issue #47) ---
+
+test("probe: pede embedding com curl, não com o fetch do Node", async () => {
+  const { calls, execImpl } = fakeSandboxExec({ stamp: null, requestResult: "yes" });
+  await probe("sbx", EMBEDDING_ENV, { execImpl });
+  const request = calls.find((c) => isEmbeddingRequestCall(c.argv));
+  const script = request.argv[2];
+  assert.match(script, /curl/);
+  assert.doesNotMatch(script, /fetch\(/);
+});
+
+test("probe: a chave do provedor de embeddings vai por stdin, nunca aparece no argv do processo bash", async () => {
+  const { calls, execImpl } = fakeSandboxExec({ stamp: null, requestResult: "yes" });
+  const env = { ...EMBEDDING_ENV, CRG_OPENAI_API_KEY: "sk-super-secreta" };
+  await probe("sbx", env, { execImpl });
+  const request = calls.find((c) => isEmbeddingRequestCall(c.argv));
+  assert.equal(request.opts.stdin, "sk-super-secreta");
+  assert.ok(!request.argv.some((a) => a.includes("sk-super-secreta")));
+});
+
+test("probe: o script passa a chave ao curl via -H @-, nunca como argumento literal do curl", async () => {
+  // `-H "authorization: Bearer $apikey"` no argv do próprio `curl` reabriria a
+  // mesma exposição um processo abaixo (`ps aux` do processo `curl`) — o
+  // script precisa entregar o header pelo stdin do `curl`, não pelo argv dele.
+  const { calls, execImpl } = fakeSandboxExec({ stamp: null, requestResult: "yes" });
+  await probe("sbx", EMBEDDING_ENV, { execImpl });
+  const request = calls.find((c) => isEmbeddingRequestCall(c.argv));
+  const script = request.argv[2];
+  assert.match(script, /-H @-/);
+  assert.doesNotMatch(script, /-H "authorization/);
+});
+
+test("probe: url e corpo do pedido vão como argumentos posicionais, nunca interpolados no script", async () => {
+  const { calls, execImpl } = fakeSandboxExec({ stamp: null, requestResult: "yes" });
+  const env = { ...EMBEDDING_ENV, CRG_OPENAI_BASE_URL: "http://evil:11434/$(touch /tmp/pwned)" };
+  await probe("sbx", env, { execImpl });
+  const request = calls.find((c) => isEmbeddingRequestCall(c.argv));
+  const script = request.argv[2];
+  assert.doesNotMatch(script, /evil/);
+  assert.doesNotMatch(script, /pwned/);
+  assert.ok(request.argv.some((a) => a.includes("evil") && a.includes("pwned")));
 });
