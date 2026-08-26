@@ -67,3 +67,33 @@ export function sandboxNameFor(root) {
   }
   return `ralph-${base}-${hash.toString(36)}`.slice(0, 60);
 }
+
+/**
+ * Endereço do host Docker a partir de dentro do sandbox. Único ponto de
+ * verdade para essa string — a sonda de Ollama e o MCP efêmero (issue #7) já
+ * precisam do mesmo endereço, e uma divergência entre eles seria um bug
+ * silencioso. Mora aqui, junto da tradução host↔container, porque é o mesmo
+ * tipo de conhecimento e mais de um módulo o consome.
+ */
+export function dockerHostAddress() {
+  return "host.docker.internal";
+}
+
+/**
+ * Corrige o host de loopback pro endereço do Docker (ADR-0002), preservando
+ * porta e caminho. Não deriva credencial nenhuma: só traduz o endereço que o
+ * operador já configurou no host — de dentro do sandbox
+ * `127.0.0.1`/`localhost`/`0.0.0.0`/`[::1]` é o próprio container, nunca o
+ * serviço do host. URL que não parseia volta como veio, sem lançar.
+ *
+ * O IPv6 entra com colchetes porque é assim que `URL.hostname` o devolve.
+ */
+export function translateLoopback(url) {
+  try {
+    const u = new URL(url);
+    if (["127.0.0.1", "localhost", "0.0.0.0", "[::1]"].includes(u.hostname)) u.hostname = dockerHostAddress();
+    return u.toString();
+  } catch {
+    return url;
+  }
+}

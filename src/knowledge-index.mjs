@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { execCapture } from "./sandbox.mjs";
+import { dockerHostAddress, translateLoopback } from "./paths.mjs";
 
 // Carimbo por sandbox, mesmo padrão do `.ralph-bootstrap` em runner.mjs: um
 // arquivo dentro do próprio sandbox, checado antes de repetir o trabalho.
@@ -144,16 +145,6 @@ export function detect(root, cfg = {}) {
 }
 
 /**
- * Endereço do host Docker a partir de dentro do sandbox. Único ponto de
- * verdade para essa string — a sonda de Ollama e o MCP efêmero (issue #7)
- * precisam do mesmo endereço, e uma divergência entre os dois seria um bug
- * silencioso.
- */
-export function dockerHostAddress() {
-  return "host.docker.internal";
-}
-
-/**
  * Pergunta, de dentro do sandbox, se o Ollama do host responde na porta de
  * embeddings. Carimbado por sandbox (ver `OLLAMA_PROBE_STAMP`) para não
  * repetir a sonda a cada iteração — o sandbox precisa ser recriado para que a
@@ -181,23 +172,6 @@ export async function probe(sandboxName) {
   await execCapture(sandboxName, ["bash", "-lc", `echo ${ollamaReachable ? "reachable" : "unreachable"} > ${OLLAMA_PROBE_STAMP}`]);
 
   return { ollamaReachable };
-}
-
-/**
- * Corrige o host de loopback pro endereço do Docker (ADR-0002), preservando
- * porta e caminho. Não deriva credencial nenhuma: só traduz o endereço que o
- * operador já configurou no host (`crgEmbeddingEnv` no config) — de dentro do
- * sandbox `127.0.0.1`/`localhost`/`0.0.0.0` é o próprio container, nunca o
- * Ollama do host. URL que não parseia volta como veio, sem lançar.
- */
-function translateLoopback(url) {
-  try {
-    const u = new URL(url);
-    if (["127.0.0.1", "localhost", "0.0.0.0", "::1"].includes(u.hostname)) u.hostname = dockerHostAddress();
-    return u.toString();
-  } catch {
-    return url;
-  }
 }
 
 /**
