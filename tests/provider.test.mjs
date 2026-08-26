@@ -102,7 +102,14 @@ test("requiresAnthropicAuth: true para anthropic, false para local", () => {
 // --- as três provas do Provedor (issue #32) ---
 
 function fakeProvider(overrides = {}) {
-  return { kind: "local", baseUrl: "http://fake-ollama:11434", model: "test-model", orientationModel: "test-model", ...overrides };
+  return {
+    kind: "local",
+    baseUrl: "http://fake-ollama:11434",
+    model: "test-model",
+    orientationModel: "test-model",
+    minContext: DEFAULTS.nightProvider.minContext,
+    ...overrides,
+  };
 }
 
 function jsonResponse(body) {
@@ -166,7 +173,63 @@ test("probe: porta fechada (fetchImpl lança) devolve reachable false sem propag
     throw new Error("ECONNREFUSED");
   };
   const result = await probe(fakeProvider(), { fetchImpl });
-  assert.deepEqual(result, { reachable: false, toolUse: false, contextOk: false, answered: null });
+  assert.deepEqual(result, { reachable: false, toolUse: false, contextOk: false });
+});
+
+// --- o canário prova o minContext declarado (issue #42) ---
+
+/** fetchImpl que simula um servidor com `contextChars` de contexto real: o
+ *  começo do prompt do canário é o primeiro a cair quando o prompt excede
+ *  o que o servidor aguenta, do mesmo jeito que um Ollama subdimensionado
+ *  trunca o começo da conversa em silêncio. */
+function serverWithContext(contextChars) {
+  return async (url, opts) => {
+    if (url.endsWith("/api/tags")) return jsonResponse({});
+    const body = JSON.parse(opts.body);
+    if (body.tools) return jsonResponse({ stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] });
+    const prompt = body.messages[0].content;
+    const visible = prompt.length > contextChars ? prompt.slice(-contextChars) : prompt;
+    const text = visible.includes("SENHA_INICIAL") ? "SENHA_INICIAL" : "SENHA_FINAL";
+    return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text }] });
+  };
+}
+
+test("probe: prompt do canário cresce com o minContext declarado", async () => {
+  let smallLen = 0;
+  let bigLen = 0;
+  const capture = (ref) => async (url, opts) => {
+    if (url.endsWith("/api/tags")) return jsonResponse({});
+    const body = JSON.parse(opts.body);
+    if (body.tools) return jsonResponse({ stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] });
+    ref.len = body.messages[0].content.length;
+    return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: "SENHA_INICIAL" }] });
+  };
+  const small = {};
+  const big = {};
+  await probe(fakeProvider({ minContext: 1000 }), { fetchImpl: capture(small) });
+  await probe(fakeProvider({ minContext: 100000 }), { fetchImpl: capture(big) });
+  assert.ok(big.len > small.len);
+});
+
+test("probe: servidor com contexto real menor que o minContext declarado reprova o canário", async () => {
+  const provider = fakeProvider({ minContext: 100000 });
+  const result = await probe(provider, { fetchImpl: serverWithContext(500) });
+  assert.equal(result.contextOk, false);
+});
+
+test("probe: servidor com contexto real igual ou maior que o minContext declarado aprova o canário", async () => {
+  const provider = fakeProvider({ minContext: 1000 });
+  const result = await probe(provider, { fetchImpl: serverWithContext(1_000_000) });
+  assert.equal(result.contextOk, true);
+});
+
+test("probe: devolve só reachable, toolUse e contextOk — nada da resposta bruta do canário", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] },
+    canaryAnswer: "A senha é SENHA_INICIAL",
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.deepEqual(Object.keys(result).sort(), ["contextOk", "reachable", "toolUse"]);
 });
 
 // --- aquecer o modelo antes da iteração 1 (issue #34) ---
@@ -212,20 +275,23 @@ test("describeAvailability: Provedor anthropic não produz linha nenhuma", () =>
 });
 
 test("describeDegradation: sonda aprovada em tudo devolve null", () => {
-  assert.equal(describeDegradation({ reachable: true, toolUse: true, contextOk: true, answered: "SENHA_INICIAL" }), null);
+  assert.equal(describeDegradation({ reachable: true, toolUse: true, contextOk: true }), null);
 });
 
 test("describeDegradation: inalcançável nomeia OLLAMA_HOST", () => {
-  const msg = describeDegradation({ reachable: false, toolUse: false, contextOk: false, answered: null });
+  const msg = describeDegradation({ reachable: false, toolUse: false, contextOk: false });
   assert.match(msg, /OLLAMA_HOST=0\.0\.0\.0/);
 });
 
 test("describeDegradation: sem tool_use pede pra trocar de modelo em nightProvider.model", () => {
-  const msg = describeDegradation({ reachable: true, toolUse: false, contextOk: false, answered: null });
+  const msg = describeDegradation({ reachable: true, toolUse: false, contextOk: false });
   assert.match(msg, /nightProvider\.model/);
 });
 
-test("describeDegradation: canário reprovado nomeia OLLAMA_CONTEXT_LENGTH", () => {
-  const msg = describeDegradation({ reachable: true, toolUse: true, contextOk: false, answered: "SENHA_FINAL" });
-  assert.match(msg, /OLLAMA_CONTEXT_LENGTH/);
+test("describeDegradation: canário reprovado prescreve o minContext declarado, não um número fixo", () => {
+  // 65536 diverge do padrão (131072) de propósito: a constante antiga não
+  // pode passar por acidente (issue #42).
+  const msg = describeDegradation({ reachable: true, toolUse: true, contextOk: false }, 65536);
+  assert.match(msg, /OLLAMA_CONTEXT_LENGTH=65536/);
+  assert.doesNotMatch(msg, /131072/);
 });

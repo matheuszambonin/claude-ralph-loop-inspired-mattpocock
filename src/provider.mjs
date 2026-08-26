@@ -73,14 +73,23 @@ const TOOL_USE_PROBE_PROMPT = "What is 2 + 2? Use the `answer` tool to report th
 
 const CANARY_START = "SENHA_INICIAL";
 const CANARY_END = "SENHA_FINAL";
-// ~45 mil caracteres (~11 mil tokens): maior que o num_ctx padrão do Ollama
-// em qualquer versão medida (2048–8192). Medir vence ler configuração —
-// OLLAMA_CONTEXT_LENGTH do servidor não aparece em /api/show.
-const CANARY_FILLER = "texto de preenchimento sem significado, só para ocupar espaço no contexto. ".repeat(600);
+const CANARY_UNIT = "texto de preenchimento sem significado, só para ocupar espaço no contexto. ";
+// Razão medida na máquina de referência da issue #29: 45 mil caracteres de
+// CANARY_UNIT ocupam ~11 mil tokens. Arredonda pra cima na hora de converter
+// minContext em caracteres — errar para menos aprova um servidor que não
+// aguenta o contexto que o operador declarou, exatamente o que o canário
+// existe para impedir (issue #42).
+const CANARY_CHARS_PER_TOKEN = 45000 / 11000;
 
-function canaryPrompt() {
+function canaryFiller(minContext) {
+  const charsNeeded = Math.ceil(minContext * CANARY_CHARS_PER_TOKEN);
+  const repeats = Math.ceil(charsNeeded / CANARY_UNIT.length);
+  return CANARY_UNIT.repeat(repeats);
+}
+
+function canaryPrompt(minContext) {
   return (
-    `${CANARY_START}\n\n${CANARY_FILLER}\n\n${CANARY_END}\n\n` +
+    `${CANARY_START}\n\n${canaryFiller(minContext)}\n\n${CANARY_END}\n\n` +
     "Qual é a senha que aparece logo no início deste texto? Responda só com a senha, nada mais."
   );
 }
@@ -98,7 +107,7 @@ async function postMessages(fetchImpl, baseUrl, body) {
 /**
  * Impura, mas só de rede (issue #32): faz as três provas do Provedor local a
  * partir do host, com `fetch` nativo — zero dependência nova. Devolve
- * `{ reachable, toolUse, contextOk, answered }`.
+ * `{ reachable, toolUse, contextOk }`.
  *
  * Inalcançável (erro de rede ou `/api/tags` não responde) encurta as outras
  * duas provas para reprovadas: sem alcance não há como testar o resto, e uma
@@ -110,10 +119,13 @@ async function postMessages(fetchImpl, baseUrl, body) {
  *
  * O canário de contexto aprova só quando a resposta cita `SENHA_INICIAL` e
  * não cita `SENHA_FINAL` — citar a senha do fim é a prova de que o começo do
- * prompt foi cortado.
+ * prompt foi cortado. O prompt cresce com `provider.minContext` (issue #42):
+ * um servidor com contexto real menor que o declarado trunca o começo e
+ * reprova, em vez de passar numa prova de tamanho fixo sem relação com o que
+ * o operador configurou.
  */
 export async function probe(provider, { fetchImpl = fetch } = {}) {
-  const unreachable = { reachable: false, toolUse: false, contextOk: false, answered: null };
+  const unreachable = { reachable: false, toolUse: false, contextOk: false };
   try {
     const tags = await fetchImpl(joinUrl(provider.baseUrl, "/api/tags"));
     if (!tags.ok) return unreachable;
@@ -135,20 +147,19 @@ export async function probe(provider, { fetchImpl = fetch } = {}) {
   }
 
   let contextOk = false;
-  let answered = null;
   try {
     const canaryRes = await postMessages(fetchImpl, provider.baseUrl, {
       model: provider.model,
       max_tokens: 64,
-      messages: [{ role: "user", content: canaryPrompt() }],
+      messages: [{ role: "user", content: canaryPrompt(provider.minContext) }],
     });
-    answered = (canaryRes.content ?? []).map((b) => b.text ?? "").join("");
+    const answered = (canaryRes.content ?? []).map((b) => b.text ?? "").join("");
     contextOk = answered.includes(CANARY_START) && !answered.includes(CANARY_END);
   } catch {
     contextOk = false;
   }
 
-  return { reachable: true, toolUse, contextOk, answered };
+  return { reachable: true, toolUse, contextOk };
 }
 
 /**
@@ -223,8 +234,12 @@ export function describeAvailability(provider) {
  * já reprova as outras duas em `probe()`, então checar alcance primeiro nunca
  * mostra um conserto de `tool_use`/canário para quem nem chegou lá. Sonda
  * aprovada em tudo devolve `null` — nenhuma linha pro `doctor` pintar.
+ *
+ * `minContext` prescreve o mesmo número que o canário exigiu (issue #42) —
+ * quem chama passa `provider.minContext`, o mesmo valor que `probe()` usou
+ * para dimensionar o prompt.
  */
-export function describeDegradation(probeResult) {
+export function describeDegradation(probeResult, minContext) {
   if (!probeResult.reachable) {
     return "Provedor local inalcançável. Rode o Ollama do host com OLLAMA_HOST=0.0.0.0 e reinicie o serviço.";
   }
@@ -237,7 +252,7 @@ export function describeDegradation(probeResult) {
   if (!probeResult.contextOk) {
     return (
       "Provedor local trunca o prompt em silêncio antes do fim do contexto. Rode o Ollama do host com " +
-      "OLLAMA_CONTEXT_LENGTH=131072 e reinicie o serviço."
+      `OLLAMA_CONTEXT_LENGTH=${minContext} e reinicie o serviço.`
     );
   }
   return null;
