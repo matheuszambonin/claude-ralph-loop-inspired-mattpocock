@@ -199,7 +199,13 @@ test("probe: porta fechada (fetchImpl lança) devolve reachable false sem propag
     throw new Error("ECONNREFUSED");
   };
   const result = await probe(fakeProvider(), { fetchImpl });
-  assert.deepEqual(result, { reachable: false, toolUse: false, contextOk: false, contextTimedOut: false });
+  assert.deepEqual(result, {
+    reachable: false,
+    toolUse: false,
+    contextOk: false,
+    contextTimedOut: false,
+    redirect: null,
+  });
 });
 
 // --- o canário prova o minContext declarado (issue #42) ---
@@ -249,13 +255,13 @@ test("probe: servidor com contexto real igual ou maior que o minContext declarad
   assert.equal(result.contextOk, true);
 });
 
-test("probe: devolve só reachable, toolUse e contextOk — nada da resposta bruta do canário", async () => {
+test("probe: devolve só os vereditos das provas — nada da resposta bruta do canário", async () => {
   const fetchImpl = mockFetch({
     toolUseResponse: { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] },
     canaryAnswer: "A senha é SENHA_INICIAL",
   });
   const result = await probe(fakeProvider(), { fetchImpl });
-  assert.deepEqual(Object.keys(result).sort(), ["contextOk", "contextTimedOut", "reachable", "toolUse"]);
+  assert.deepEqual(Object.keys(result).sort(), ["contextOk", "contextTimedOut", "reachable", "redirect", "toolUse"]);
 });
 
 // --- lentidão não é truncamento (issue #56) ---
@@ -373,6 +379,7 @@ test("probeBoth: as duas pernas aprovando devolve alcance com as outras provas d
     toolUse: true,
     contextOk: true,
     contextTimedOut: false,
+    redirect: null,
     reachableFromHost: true,
     reachableFromSandbox: true,
   });
@@ -728,4 +735,126 @@ test("probe: com teto folgado, o mesmo Provedor lento conclui a prova", async (t
   const result = await probe(provider);
   assert.equal(result.contextTimedOut, false);
   assert.equal(result.contextOk, true);
+});
+
+// --- a sonda diz que foi redirect, em vez de culpar o modelo (issue #61) ---
+//
+// O cliente da issue #57 não segue 3xx, e essa é a decisão registrada no
+// ticket. Contra o Ollama de loopback do caminho feliz isso é invisível;
+// contra um `baseUrl` mediado por proxy, a sonda passa a ver uma resposta
+// não-2xx onde antes via o corpo final. O que estes testes prendem é o
+// diagnóstico, não o comportamento: um problema de endereço não pode sair
+// como prosa sobre o modelo.
+
+/** Servidor que responde 3xx em toda rota, como um proxy que reescreve o
+ *  endereço do Provedor faria. */
+function redirectingServer(t, status, location) {
+  const server = createServer((req, res) => {
+    res.writeHead(status, { location }).end();
+  });
+  t.after(() => server.close());
+  return new Promise((done) => {
+    server.listen(0, "127.0.0.1", () => done(`http://127.0.0.1:${server.address().port}`));
+  });
+}
+
+test("httpJson: 3xx volta com ok falso e o Location do cabeçalho, sem seguir o redirect", async (t) => {
+  const url = await redirectingServer(t, 301, "https://ollama.example/api/tags");
+  const res = await httpJson(url);
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 301);
+  assert.equal(res.headers.location, "https://ollama.example/api/tags");
+});
+
+test("probe: /api/tags respondendo 3xx reprova o alcance e registra o redirect com o destino", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 302, headers: { location: "http://proxy:8080/api/tags" } });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.reachable, false);
+  assert.deepEqual(result.redirect, { status: 302, location: "http://proxy:8080/api/tags" });
+});
+
+test("probe: /v1/messages respondendo 3xx registra o redirect em vez de só reprovar as provas", async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/api/tags")) return jsonResponse({});
+    return { ok: false, status: 308, headers: { location: "https://ollama.example/v1/messages" } };
+  };
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.reachable, true);
+  assert.equal(result.toolUse, false);
+  assert.deepEqual(result.redirect, { status: 308, location: "https://ollama.example/v1/messages" });
+});
+
+test("probe: redirect sem cabeçalho Location ainda é registrado como redirect", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 303, headers: {} });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.deepEqual(result.redirect, { status: 303, location: null });
+});
+
+test("probe: resposta não-2xx que não é redirect não vira redirect", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 500, headers: {} });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.redirect, null);
+});
+
+test("probe: 304 não é redirect — ele não manda a sonda a endereço nenhum", async () => {
+  const fetchImpl = async () => ({ ok: false, status: 304, headers: {} });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.redirect, null);
+});
+
+test("probe: sonda que passa em tudo não registra redirect nenhum", async () => {
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryAnswer: "A senha é SENHA_INICIAL" });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.redirect, null);
+});
+
+test("describeDegradation: redirect nomeia o status, o destino e nightProvider.baseUrl", () => {
+  const probeResult = {
+    reachable: false,
+    reachableFromHost: false,
+    reachableFromSandbox: true,
+    toolUse: false,
+    contextOk: false,
+    contextTimedOut: false,
+    redirect: { status: 307, location: "https://ollama.example/v1" },
+  };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /307/);
+  assert.match(msg, /redirect/);
+  assert.match(msg, /https:\/\/ollama\.example\/v1/);
+  assert.match(msg, /nightProvider\.baseUrl/);
+});
+
+test("describeDegradation: redirect não culpa o modelo, o contexto nem a lentidão", () => {
+  const probeResult = {
+    reachable: true,
+    toolUse: false,
+    contextOk: false,
+    contextTimedOut: true,
+    redirect: { status: 302, location: "http://proxy:8080/v1" },
+  };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.doesNotMatch(msg, /nightProvider\.model/);
+  assert.doesNotMatch(msg, /OLLAMA_CONTEXT_LENGTH/);
+  assert.doesNotMatch(msg, /não concluiu/);
+  assert.doesNotMatch(msg, /OLLAMA_HOST=0\.0\.0\.0/);
+});
+
+test("describeDegradation: redirect sem Location diz que o cabeçalho não veio, e prescreve o mesmo conserto", () => {
+  const probeResult = {
+    reachable: false,
+    reachableFromHost: false,
+    reachableFromSandbox: false,
+    redirect: { status: 301, location: null },
+  };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /301/);
+  assert.match(msg, /Location/);
+  assert.match(msg, /nightProvider\.baseUrl/);
+});
+
+test("describeDegradation: sem redirect, as reprovações de sempre seguem intactas", () => {
+  const probeResult = { reachable: true, toolUse: false, contextOk: false, contextTimedOut: false, redirect: null };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /escreve a chamada de ferramenta como texto/);
 });

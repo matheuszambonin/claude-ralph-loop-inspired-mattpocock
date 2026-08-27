@@ -99,8 +99,8 @@ function canaryPrompt(minContext) {
 
 /**
  * Cliente HTTP da biblioteca padrão, com a forma de retorno do `fetch` —
- * `{ ok, status, json() }` — para que a costura injetável de `probe()` não
- * mude de assinatura.
+ * `{ ok, status, headers, json() }` — para que a costura injetável de `probe()`
+ * não mude de assinatura.
  *
  * Ele existe porque o teto do canário é do operador desde a issue #57, e o
  * `fetch` global não sabe honrar um teto acima de 300s: os 300s são o
@@ -114,6 +114,17 @@ function canaryPrompt(minContext) {
  * a promessa só resolve no `end` da resposta, e o abort continua armado até
  * lá. É o corpo que traz a resposta do canário: um teto que cobrisse só os
  * cabeçalhos aprovaria um Provedor que responde e nunca termina.
+ *
+ * Ele não segue redirect, e isso é escolha, não esquecimento (issue #61):
+ * seguir 3xx à mão custa detecção de laço, reescrita de método no 303 e corte
+ * de cabeçalho ao trocar de origem — superfície nova, num projeto de zero
+ * dependência, para uma sonda que fala com um Ollama de loopback. A perna do
+ * sandbox usa `curl -fsS`, que também não segue, e fazer só esta seguir seria
+ * as duas metades da sonda discordando sobre o mesmo `baseUrl`. O `-f` só
+ * reprova em 4xx e 5xx, então contra um 3xx aquela perna sai com código zero e
+ * aprova: quem enxerga o redirect é esta, e é daqui que o diagnóstico tem de
+ * sair. Por isso o 3xx sai como resposta não-ok com os cabeçalhos junto, para
+ * `describeDegradation` poder dizer que foi redirect e para onde.
  *
  * Rejeita com o `reason` do próprio sinal, que é o que dá a `isTimeout()` o
  * `TimeoutError` do `AbortSignal.timeout` e o `AbortError` dos abortos
@@ -154,6 +165,7 @@ export function httpJson(url, { method = "GET", headers = {}, body, signal } = {
         resolve({
           ok: res.statusCode >= 200 && res.statusCode < 300,
           status: res.statusCode,
+          headers: res.headers,
           json: async () => JSON.parse(text),
         });
       });
@@ -175,6 +187,25 @@ export function httpJson(url, { method = "GET", headers = {}, body, signal } = {
  */
 const REACH_TIMEOUT_MS = 5_000;
 
+/**
+ * Redirect visto numa resposta da sonda, ou `null` para qualquer outra coisa
+ * — inclusive um 500, que é falha do Provedor e não do endereço.
+ *
+ * Existe porque o cliente não segue 3xx (veja `httpJson`), e sem este dado a
+ * resposta chegaria a `describeDegradation` como um não-2xx qualquer: o
+ * operador que apontou `nightProvider.baseUrl` para um proxy recebia um
+ * diagnóstico sobre inferência para um problema de endereço.
+ *
+ * O `location` vem do objeto de cabeçalhos do Node, já em minúsculas, e pode
+ * faltar — 3xx sem `Location` é resposta torta, mas continua sendo redirect.
+ * O 304 é a exceção: ele não manda a sonda a lugar nenhum, e chamá-lo de
+ * redirect prescreveria trocar um `baseUrl` que está certo.
+ */
+function redirectOf(res) {
+  if (!(res.status >= 300 && res.status < 400) || res.status === 304) return null;
+  return { status: res.status, location: res.headers?.location ?? null };
+}
+
 async function postMessages(fetchImpl, provider, body) {
   const res = await fetchImpl(joinUrl(provider.baseUrl, "/v1/messages"), {
     method: "POST",
@@ -182,7 +213,10 @@ async function postMessages(fetchImpl, provider, body) {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(Math.round(provider.probeTimeoutSeconds * 1000)),
   });
-  if (!res.ok) throw new Error(`status ${res.status}`);
+  // O `redirect` viaja no erro porque é o único caminho de volta daqui: quem
+  // chama só vê a exceção, e sem ele um 3xx chegaria à prosa como não-2xx
+  // qualquer (issue #61).
+  if (!res.ok) throw Object.assign(new Error(`status ${res.status}`), { redirect: redirectOf(res) });
   return res.json();
 }
 
@@ -201,7 +235,7 @@ function isTimeout(err) {
  * Impura, mas só de rede (issue #32): faz as três provas do Provedor local a
  * partir do host, com o cliente `httpJson` acima — biblioteca padrão, zero
  * dependência nova. Devolve
- * `{ reachable, toolUse, contextOk, contextTimedOut }`.
+ * `{ reachable, toolUse, contextOk, contextTimedOut, redirect }`.
  *
  * Inalcançável (erro de rede ou `/api/tags` não responde) encurta as outras
  * duas provas para reprovadas: sem alcance não há como testar o resto, e uma
@@ -224,17 +258,27 @@ function isTimeout(err) {
  * um servidor com contexto real menor que o declarado trunca o começo e
  * reprova, em vez de passar numa prova de tamanho fixo sem relação com o que
  * o operador configurou.
+ *
+ * `redirect` (issue #61) é o 3xx que qualquer uma das três pernas viu, com o
+ * destino do `Location`, ou `null`. Ele não é um veredito a mais: a perna que
+ * o recebeu já reprovou, como reprovaria com qualquer não-2xx. Ele existe para
+ * que a prosa possa falar de endereço quando foi endereço, em vez de acusar o
+ * modelo por uma resposta que nunca chegou a ser inferência.
  */
 export async function probe(provider, { fetchImpl = httpJson } = {}) {
-  const unreachable = { reachable: false, toolUse: false, contextOk: false, contextTimedOut: false };
+  const unreachable = { reachable: false, toolUse: false, contextOk: false, contextTimedOut: false, redirect: null };
   try {
     const tags = await fetchImpl(joinUrl(provider.baseUrl, "/api/tags"), {
       signal: AbortSignal.timeout(REACH_TIMEOUT_MS),
     });
-    if (!tags.ok) return unreachable;
+    if (!tags.ok) return { ...unreachable, redirect: redirectOf(tags) };
   } catch {
     return unreachable;
   }
+
+  // O primeiro redirect visto vence: as duas provas de inferência falam com o
+  // mesmo endereço, e repetir o diagnóstico não acrescenta nada.
+  let redirect = null;
 
   let toolUse = false;
   try {
@@ -245,8 +289,9 @@ export async function probe(provider, { fetchImpl = httpJson } = {}) {
       messages: [{ role: "user", content: TOOL_USE_PROBE_PROMPT }],
     });
     toolUse = toolRes.stop_reason === "tool_use" && (toolRes.content ?? []).some((b) => b.type === "tool_use");
-  } catch {
+  } catch (err) {
     toolUse = false;
+    redirect ??= err?.redirect ?? null;
   }
 
   let contextOk = false;
@@ -262,9 +307,10 @@ export async function probe(provider, { fetchImpl = httpJson } = {}) {
   } catch (err) {
     contextOk = false;
     contextTimedOut = isTimeout(err);
+    redirect ??= err?.redirect ?? null;
   }
 
-  return { reachable: true, toolUse, contextOk, contextTimedOut };
+  return { reachable: true, toolUse, contextOk, contextTimedOut, redirect };
 }
 
 /**
@@ -409,7 +455,21 @@ export function describeProbeStart(provider) {
  * Prosa pro comando que conserta cada reprovação da sonda (CLAUDE.md: "erro
  * de usuário diz o comando que conserta"). Sonda aprovada em tudo devolve
  * `null` — nenhuma linha pro `doctor` pintar. A ordem dos ramos é o
- * comportamento: alcance → timeout → tool_use → truncamento.
+ * comportamento: redirect → alcance → timeout → tool_use → truncamento.
+ *
+ * O redirect (issue #61) vem antes de tudo porque ele explica as reprovações
+ * que vêm depois, e nenhuma delas explica o redirect: um 3xx em `/api/tags`
+ * chega aqui como Provedor inalcançável, e um 3xx em `/v1/messages` chega
+ * como modelo que não emite `tool_use`. Nos dois casos o operador levaria um
+ * conserto caro (reiniciar o Ollama, baixar outro modelo) por um `baseUrl`
+ * mediado. A sonda não segue o redirect por escolha (veja `httpJson`), então
+ * o conserto é declarar o destino final.
+ *
+ * Ele vence até o caso de host aprovado e sandbox reprovado, que perde aqui o
+ * comando da política de rede: um `baseUrl` que redireciona está errado para
+ * as duas pernas, e mandar abrir a rota até um endereço que não é o final é
+ * pedir o segundo conserto antes do primeiro. Consertado o endereço, a sonda
+ * volta a reprovar pela rota, com o comando de sempre.
  *
  * Alcance vem primeiro porque um Provedor inalcançável já reprova as outras
  * provas dentro de `probe()` — checar alcance antes de tudo nunca mostra um
@@ -453,6 +513,15 @@ export function describeProbeStart(provider) {
  * sandbox já interpolado, colável como está (padrão da issue #50).
  */
 export function describeDegradation(probeResult, minContext, baseUrl, sandboxName, probeTimeoutSeconds) {
+  if (probeResult.redirect) {
+    const { status, location } = probeResult.redirect;
+    const target = location ? `um redirect para ${location}` : "um redirect sem cabeçalho Location";
+    return (
+      `Provedor local respondeu ${status} em ${baseUrl}, ${target}. A sonda não segue redirect por ` +
+      "escolha, então o endereço declarado nunca chega a ser provado. Declare o destino final em " +
+      "nightProvider.baseUrl no .ralph/config.json."
+    );
+  }
   if (!probeResult.reachable) {
     if (probeResult.reachableFromHost && !probeResult.reachableFromSandbox) {
       return (
