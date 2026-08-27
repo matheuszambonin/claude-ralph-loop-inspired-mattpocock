@@ -17,6 +17,14 @@ que o Ralph configura para si mesmo: essa configuração vive dentro dele e morr
 com ele.
 _Avoid_: container, ambiente, box
 
+**Workspace do sandbox**:
+Cada diretório do host que o `docker sandbox create` monta dentro do
+container — o repositório alvo, os plugins do host, a raiz de instalação do
+Ralph, os mounts extras. Não é o **repositório alvo**: este é só um dos
+workspaces montados. Onde a mensagem ou o teste falam do diretório montado em
+si, não do que ele contém, o termo é este.
+_Avoid_: volume, bind mount, ponto de montagem
+
 **Configuração executável do alvo**:
 O que o repositório alvo carrega e que o git ou o Claude Code rodam sozinhos,
 sem ninguém mandar — hooks e servidores MCP. O sandbox nunca a executa; lê-la
