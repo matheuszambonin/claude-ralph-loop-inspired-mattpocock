@@ -243,6 +243,12 @@ test("embeddingTarget: CRG_OPENAI_BASE_URL declarado vence — mira o provedor r
   assert.equal(target.isOllama, false);
 });
 
+test("embeddingTarget: CRG_OPENAI_BASE_URL declarado apontando pro Ollama do host devolve isOllama true — o alvo real da #20", () => {
+  const target = embeddingTarget({ CRG_OPENAI_BASE_URL: "http://localhost:11434/v1", CRG_OPENAI_MODEL: "nomic-embed-text" });
+  assert.equal(target.baseUrl, "http://host.docker.internal:11434/v1");
+  assert.equal(target.isOllama, true);
+});
+
 test("embeddingTarget: sem CRG_OPENAI_BASE_URL declarado, o Ollama do host é o fallback", () => {
   const target = embeddingTarget({ CRG_OPENAI_MODEL: "nomic-embed-text" });
   assert.match(target.baseUrl, /^http:\/\/host\.docker\.internal:11434\/v1$/);
@@ -364,6 +370,16 @@ test("describeDegradation: Ollama (fallback) reprovado nomeia o endereço sondad
   });
   assert.match(line, /busca semântica/);
   assert.match(line, /host\.docker\.internal:11434\/v1/);
+  assert.match(line, /OLLAMA_HOST=0\.0\.0\.0/);
+});
+
+test("describeDegradation: Ollama declarado no .mcp.json do alvo (não fallback) reprovado ainda cita OLLAMA_HOST=0.0.0.0 — issue #39", () => {
+  const target = embeddingTarget({ CRG_OPENAI_BASE_URL: "http://localhost:11434/v1", CRG_OPENAI_MODEL: "nomic-embed-text" });
+  const line = describeDegradation(withCodeReviewGraphDetected(), {
+    reachable: false,
+    address: target.baseUrl,
+    isOllama: target.isOllama,
+  });
   assert.match(line, /OLLAMA_HOST=0\.0\.0\.0/);
 });
 

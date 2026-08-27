@@ -149,6 +149,25 @@ export function detect(root, cfg = {}) {
 }
 
 /**
+ * `isOllama` é propriedade do endereço resolvido, não da ausência de
+ * declaração (issue #39) — um operador que escreve `CRG_OPENAI_BASE_URL` à
+ * mão apontando pro Ollama do host (o caso real que motivou a #20) ainda é
+ * Ollama, e `describeDegradation` precisa do conselho `OLLAMA_HOST=0.0.0.0`,
+ * não do genérico "confira CRG_OPENAI_*". Compara depois de `translateLoopback`
+ * porque o alvo escreve `localhost`/`127.0.0.1` e o Ralph já traduziu pro
+ * host do Docker antes de chegar aqui — as duas formas apontam pro mesmo
+ * Ollama.
+ */
+function isOllamaAddress(baseUrl) {
+  try {
+    const u = new URL(baseUrl);
+    return u.hostname === dockerHostAddress() && u.port === String(OLLAMA_PORT);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Provedor de embeddings que a sonda mira (issue #19) — pura, mesma leitura
  * de `embeddingEnv` que `mcpServerFor` usa para o env do MCP, mas sem
  * precisar de `containerRoot`. `CRG_OPENAI_BASE_URL` declarado (no `.mcp.json`
@@ -164,11 +183,12 @@ export function embeddingTarget(embeddingEnv = {}) {
   const model = embeddingEnv.CRG_OPENAI_MODEL;
   if (!model) return null;
   const declared = embeddingEnv.CRG_OPENAI_BASE_URL;
+  const baseUrl = declared ? translateLoopback(declared) : `http://${dockerHostAddress()}:${OLLAMA_PORT}/v1`;
   return {
-    baseUrl: declared ? translateLoopback(declared) : `http://${dockerHostAddress()}:${OLLAMA_PORT}/v1`,
+    baseUrl,
     model,
     apiKey: embeddingEnv.CRG_OPENAI_API_KEY ?? "",
-    isOllama: !declared,
+    isOllama: isOllamaAddress(baseUrl),
   };
 }
 
