@@ -292,6 +292,23 @@ export function decodeProbeStamp(raw, target) {
 }
 
 /**
+ * Apaga o carimbo da sonda, para que a próxima leitura prove de novo em vez de
+ * repetir o resultado velho (issue #53).
+ *
+ * Existe pelo carimbo **negativo**: consertar o que reprovou — abrir a rota do
+ * sandbox até o host, subir o provedor, baixar o modelo — não muda a identidade
+ * sondada nem recria o sandbox, as duas únicas coisas que `decodeProbeStamp`
+ * aceita como motivo para desconfiar do carimbo. Sem isto o `unreachable` fica
+ * lá para sempre, e por ADR-0003 a iteração segue sem a tool que já voltou a
+ * funcionar.
+ *
+ * `rm -f`: carimbo ausente é o caso normal (sandbox recém-criado), não erro.
+ */
+export async function clearProbeStamp(sandboxName, { execImpl = execCapture } = {}) {
+  await execImpl(sandboxName, ["rm", "-f", EMBEDDING_PROBE_STAMP]);
+}
+
+/**
  * Prova, de dentro do sandbox, que o provedor de embeddings declarado
  * responde de verdade (issue #19). Carimbado por sandbox (ver
  * `EMBEDDING_PROBE_STAMP`) para não repetir a prova a cada iteração — o

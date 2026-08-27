@@ -363,7 +363,7 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
     // nunca um fallback silencioso pro Claude pago — o operador está dormindo
     // e não veria o aviso a tempo.
     const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
-    const failure = describeProviderDegradation(probeResult, provider.minContext, provider.baseUrl);
+    const failure = describeProviderDegradation(probeResult, provider.minContext, provider.baseUrl, cfg.sandboxName);
     if (failure) throw new Error(failure);
 
     // Aquece o modelo antes da iteração 1 (issue #34) — sem isso, cada

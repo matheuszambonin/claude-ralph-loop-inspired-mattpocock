@@ -12,6 +12,8 @@ import {
   execInteractive,
   runAgentInteractive,
   ensureSandbox,
+  allowHostLoopback,
+  describeHostLoopbackOpened,
   mountsFor,
 } from "./sandbox.mjs";
 import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth } from "./runner.mjs";
@@ -24,6 +26,7 @@ import {
   describeInstallFailure as describeKnowledgeIndexInstallFailure,
   needsEmbeddingProbe,
   probe as probeKnowledgeIndex,
+  clearProbeStamp,
   probeInstall as probeKnowledgeIndexInstall,
   readTargetMcpConfig,
   resolveEmbeddingEnv,
@@ -264,7 +267,7 @@ async function cmdDoctor(flags) {
   if (flags.night) {
     const provider = resolveProvider(cfg, { night: true });
     const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
-    const degradation = describeProviderDegradation(probeResult, provider.minContext, provider.baseUrl);
+    const degradation = describeProviderDegradation(probeResult, provider.minContext, provider.baseUrl, cfg.sandboxName);
     degradation ? warn(degradation) : ok(describeProviderAvailability(provider));
   }
 
@@ -448,7 +451,18 @@ async function cmdShell() {
 
 async function cmdBootstrap(flags) {
   const cfg = loadConfig(root);
-  await ensureSandbox(cfg.sandboxName, root, cfg);
+  const created = await ensureSandbox(cfg.sandboxName, root, cfg);
+  // `ensureSandbox` já abre a rota no sandbox que ele mesmo cria; o `--force`
+  // é o caminho de recuperação do sandbox que nasceu antes da issue #52, e é
+  // o comando que o `doctor` manda rodar quando algo falta lá dentro.
+  if (!created && flags.force) {
+    await allowHostLoopback(cfg.sandboxName);
+    process.stdout.write(describeHostLoopbackOpened());
+    // O `--force` refaz o bootstrap e o setup; a prova carimbada da sonda de
+    // embeddings era a única coisa que ele deixava intacta, e é justamente a
+    // que guarda um "inalcançável" de antes do conserto (issue #53).
+    await clearProbeStamp(cfg.sandboxName);
+  }
   await ensureBootstrap(cfg.sandboxName, root, { force: !!flags.force });
   await ensureSetup(cfg.sandboxName, root, cfg, { force: !!flags.force });
   process.stdout.write(`${paint(C.green, "✓")} sandbox preparado\n`);

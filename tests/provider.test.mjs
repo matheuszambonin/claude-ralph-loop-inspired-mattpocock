@@ -397,13 +397,36 @@ test("describeDegradation: canário reprovado prescreve o minContext declarado, 
 
 test("describeDegradation: host reprova nomeia OLLAMA_HOST, mesma linha de sempre", () => {
   const probeResult = { reachable: false, reachableFromHost: false, reachableFromSandbox: false };
-  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434");
+  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434", "ralph-alvo-1abc");
   assert.match(msg, /OLLAMA_HOST=0\.0\.0\.0/);
 });
 
 test("describeDegradation: host aprova e sandbox reprova nomeia o endereço traduzido, não manda reiniciar o serviço", () => {
   const probeResult = { reachable: false, reachableFromHost: true, reachableFromSandbox: false };
-  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434");
+  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434", "ralph-alvo-1abc");
   assert.match(msg, /http:\/\/host\.docker\.internal:11434/);
   assert.doesNotMatch(msg, /OLLAMA_HOST=0\.0\.0\.0/);
+});
+
+// --- a prescrição entrega o comando que abre a rota (issue #51) ---
+
+test("describeDegradation: sandbox reprova entrega o comando da política de rede, com o sandbox interpolado", () => {
+  const probeResult = { reachable: false, reachableFromHost: true, reachableFromSandbox: false };
+  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  assert.match(msg, /docker sandbox network proxy ralph-alvo-1abc --allow-cidr ::1\/128/);
+});
+
+test("describeDegradation: sandbox reprova não manda mais reiniciar o Docker Desktop", () => {
+  // O conserto medido na issue #51 é a política de rede do sandbox; reiniciar
+  // a engine não mexe nela, e o operador que obedecia pagava o ciclo inteiro
+  // para continuar exatamente onde estava.
+  const probeResult = { reachable: false, reachableFromHost: true, reachableFromSandbox: false };
+  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  assert.doesNotMatch(msg, /Docker Desktop/);
+});
+
+test("describeDegradation: host reprova não prescreve a política de rede — não é a rota que falhou ali", () => {
+  const probeResult = { reachable: false, reachableFromHost: false, reachableFromSandbox: false };
+  const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  assert.doesNotMatch(msg, /allow-cidr/);
 });

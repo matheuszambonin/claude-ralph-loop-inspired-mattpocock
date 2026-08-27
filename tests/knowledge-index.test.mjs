@@ -19,6 +19,7 @@ import {
   encodeProbeStamp,
   decodeProbeStamp,
   CRG_ID,
+  clearProbeStamp,
 } from "../src/knowledge-index.mjs";
 
 function tmpRepo(t) {
@@ -726,4 +727,38 @@ test("probe: url e corpo do pedido vão como argumentos posicionais, nunca inter
   assert.doesNotMatch(script, /evil/);
   assert.doesNotMatch(script, /pwned/);
   assert.ok(request.argv.some((a) => a.includes("evil") && a.includes("pwned")));
+});
+
+// --- o carimbo negativo não sobrevive ao conserto (issue #53) ---
+
+test("clearProbeStamp: apaga o carimbo com rm -f — ausente é o caso normal, não erro", async () => {
+  const calls = [];
+  await clearProbeStamp("ralph-alvo-1abc", {
+    execImpl: async (name, argv) => {
+      calls.push({ name, argv });
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, "ralph-alvo-1abc");
+  assert.deepEqual(calls[0].argv, ["rm", "-f", "/home/agent/.claude/.ralph-embedding-probe"]);
+});
+
+test("probe: sem carimbo, prova de novo em vez de repetir o resultado velho", async () => {
+  // A sequência que `clearProbeStamp` habilita: `cat` falha (carimbo apagado),
+  // então a sonda faz o pedido real e recarimba. Sem isso o `unreachable` de
+  // antes do conserto seria devolvido para sempre (issue #53).
+  const env = { CRG_OPENAI_BASE_URL: "http://host.docker.internal:11434/v1", CRG_OPENAI_MODEL: "qwen3-embedding:0.6b" };
+  const seen = [];
+  const result = await probe("ralph-alvo-1abc", env, {
+    execImpl: async (_name, argv, opts) => {
+      seen.push(argv[0]);
+      if (argv[0] === "cat") return { code: 1, stdout: "", stderr: "" };
+      // o pedido real responde "yes"; a gravação do carimbo novo não responde nada
+      if (argv[1] === "-lc" && argv[2].startsWith("cat >")) return { code: 0, stdout: "", stderr: "" };
+      return { code: 0, stdout: "yes\n", stderr: "" };
+    },
+  });
+  assert.equal(result.reachable, true);
+  assert.equal(seen[0], "cat");
 });

@@ -278,18 +278,27 @@ export function describeAvailability(provider) {
  *
  * Host aprovado e sandbox reprovado (issue #45) é o caso comum sob
  * `docker sandbox` — o Ollama já está de pé, o problema é a rota do
- * container até ele (proxy do docker sandbox, firewall do adaptador Docker,
- * porta divergente). Mandar `OLLAMA_HOST=0.0.0.0` e reiniciar o serviço aí é
+ * container até ele. Mandar `OLLAMA_HOST=0.0.0.0` e reiniciar o serviço aí é
  * ruído: o operador já fez isso, e a saída não distinguia as duas pernas.
+ *
+ * O que conserta esse caso é uma coisa só, e não é reiniciar o Docker Desktop
+ * (issue #51): a política de rede do sandbox bloqueia `::1/128` por padrão, e
+ * é para lá que o proxy MITM resolve `host.docker.internal`. Medido, o proxy
+ * tenta `::1` primeiro, bate na regra e devolve 500 sem sequer tentar o IPv4,
+ * onde o Ollama está. `--allow-cidr ::1/128` é a única variante que abre a
+ * rota: `--allow-host host.docker.internal`, `--allow-host "::1"` e
+ * `--allow-host "[::1]:11434"` seguem em 500, porque `--allow-host` não vence
+ * um bloqueio de CIDR. Daí a linha entregar o comando inteiro com o nome do
+ * sandbox já interpolado, colável como está (padrão da issue #50).
  */
-export function describeDegradation(probeResult, minContext, baseUrl) {
+export function describeDegradation(probeResult, minContext, baseUrl, sandboxName) {
   if (!probeResult.reachable) {
     if (probeResult.reachableFromHost && !probeResult.reachableFromSandbox) {
       return (
         `Provedor local respondeu ao host em ${baseUrl}, mas o sandbox não alcançou o mesmo endereço. ` +
-        "O Ollama já está de pé — reiniciar o serviço não resolve. Confira se a porta em " +
-        `${baseUrl} é a mesma que o Ollama expõe e reinicie o Docker Desktop para restaurar a rota ` +
-        "do sandbox até o host."
+        "O Ollama já está de pé — reiniciar o serviço não resolve: a política de rede do sandbox " +
+        "bloqueia o loopback do host. Para abrir a rota:\n\n" +
+        `  docker sandbox network proxy ${sandboxName} --allow-cidr ::1/128`
       );
     }
     return "Provedor local inalcançável. Rode o Ollama do host com OLLAMA_HOST=0.0.0.0 e reinicie o serviço.";

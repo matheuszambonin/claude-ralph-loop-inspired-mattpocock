@@ -43,6 +43,40 @@ export async function sandboxExists(name) {
 }
 
 /**
+ * O único endereço que o proxy do sandbox precisa deixar passar para o
+ * Provedor local e para a sonda de embeddings alcançarem o host (issue #52).
+ *
+ * Todo o tráfego do sandbox atravessa um proxy MITM, e é o proxy — não o
+ * container — quem resolve `host.docker.internal`: do lado dele o nome cai em
+ * `localhost`, e ele tenta `::1` antes do IPv4. A política default do
+ * `docker sandbox` bloqueia `::1/128`, então o pedido morre em 500 sem nunca
+ * tentar o IPv4, onde o Ollama do host está escutando.
+ *
+ * É um CIDR e não um host porque as variantes estreitas não funcionam —
+ * medido em dois sandboxes: `--allow-host host.docker.internal`,
+ * `--allow-host "::1"` e `--allow-host "[::1]:11434"` seguem em 500, porque
+ * `--allow-host` não vence um bloqueio de CIDR. Não há granularidade de porta
+ * disponível, então o que se abre é o loopback do host inteiro: o agente passa
+ * a alcançar qualquer serviço que escute em `localhost` na sua máquina. Por
+ * isso quem chama anuncia, como `ralph login --share-credentials` anuncia.
+ */
+export const HOST_LOOPBACK_CIDR = "::1/128";
+
+/**
+ * Abre a rota do sandbox até o loopback do host. Idempotente — repetir a regra
+ * é o caso normal, não erro.
+ *
+ * Sem isso o sandbox nasce sem rota até o host e **nada** no Ralph a abre: não
+ * é intermitência, é todo sandbox novo, e derruba de uma vez o Provedor do
+ * night mode e a sonda de embeddings do code-review-graph, que roda em todo
+ * loop. O diagnóstico das issues #13, #19 e #47 estava certo em dizer "falhou";
+ * o que faltava era a rota existir.
+ */
+export async function allowHostLoopback(name, { dockerImpl = docker } = {}) {
+  await dockerImpl(["sandbox", "network", "proxy", name, "--allow-cidr", HOST_LOOPBACK_CIDR]);
+}
+
+/**
  * Monta a lista de workspaces do sandbox. O primeiro é o repo (rw); os demais
  * entram read-only, e são o que faz as skills do Matt Pocock existirem lá
  * dentro — sem isso o sandbox é um Claude Code pelado.
@@ -136,7 +170,26 @@ export async function ensureSandbox(name, root, cfg) {
     child.on("close", (c) => resolve({ code: c ?? 1, stderr }));
   });
   if (code !== 0) throw new SandboxError(describeSandboxCreateFailure({ code, stderr, mounts }));
+  // Depois do create e não a cada chamada: a regra persiste no sandbox, e
+  // reaplicá-la em toda iteração custaria um `docker` a mais por um estado que
+  // já está lá. Sandbox criado antes desta issue se recupera pelo
+  // `ralph bootstrap --force`.
+  await allowHostLoopback(name);
+  process.stdout.write(describeHostLoopbackOpened());
   return true;
+}
+
+/**
+ * O que a abertura da rota custa, dito na hora em que ela acontece — mesma
+ * família do aviso de `ralph login --share-credentials`, e pelo mesmo motivo:
+ * o Ralph está ampliando o que o agente alcança, e ampliação silenciosa é a
+ * que o operador descobre tarde.
+ */
+export function describeHostLoopbackOpened() {
+  return (
+    "! rota do sandbox até o loopback do host aberta — sem ela o Provedor local e a busca semântica não\n" +
+    "  alcançam a sua máquina. O agente passa a alcançar qualquer serviço que escute em localhost.\n"
+  );
 }
 
 export async function removeSandbox(name) {
