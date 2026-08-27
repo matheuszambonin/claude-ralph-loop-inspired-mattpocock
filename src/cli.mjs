@@ -29,7 +29,7 @@ import {
   resolveEmbeddingEnv,
   withInstallBlock,
 } from "./knowledge-index.mjs";
-import { ITERATION_PROMPTS, CUSTOM, chooseTemplate, inspectPrompt, installPrompt, templatePath, describeDrift } from "./prompts.mjs";
+import { ITERATION_PROMPTS, DEFAULT_PROMPT, OTHER_PROMPTS, CUSTOM, chooseTemplate, inspectPrompt, installPrompt, templatePath, describeDrift } from "./prompts.mjs";
 import {
   resolve as resolveProvider,
   describeAvailability as describeProviderAvailability,
@@ -99,6 +99,23 @@ function detectFeedbackLoops(dir) {
   return loops;
 }
 
+/**
+ * O que a linha do prompt diz na saída do `init`. Nomear o template é o mínimo
+ * para o operador poder desfazer: `ralph init --force` num prompt sem cabeçalho
+ * o troca pelo padrão, e calado esse é o desfecho que o ADR-0009 recusa,
+ * entrando de volta pela porta do default (issue #50).
+ *
+ * Relata o que aconteceu, não o que se pediu — sem `--force`, um prompt que já
+ * existe fica onde está. E só prescreve `--force` quando ele muda alguma coisa:
+ * num prompt em dia o comando seria no-op, e a linha soaria como pendência.
+ */
+function promptNote(target, existing, installed) {
+  if (installed) return `(${target.name})`;
+  if (!target.install) return `(${CUSTOM} — preservado; 'ralph init --force --prompt ${DEFAULT_PROMPT}' sobrescreve)`;
+  if (existing?.state === "em-dia") return `(${existing.template} — em dia)`;
+  return `(preservado — 'ralph init --force' instala o ${target.name})`;
+}
+
 function cmdInit(flags) {
   const dir = ralphDir(root);
   mkdirSync(path.join(dir, "logs"), { recursive: true });
@@ -116,14 +133,21 @@ function cmdInit(flags) {
   // lá e é prompt de subagente — instalá-lo como Prompt da iteração dá uma
   // iteração que só sabe ler (issue #48).
   if (flags.prompt && !ITERATION_PROMPTS.includes(flags.prompt)) {
-    die(`'${flags.prompt}' não é um prompt de iteração — rode 'ralph init --prompt <${ITERATION_PROMPTS.join("|")}>'`);
+    die(
+      `'${flags.prompt}' não é um prompt de iteração — os de iteração são ${ITERATION_PROMPTS.join(", ")}.\n` +
+        `  Rode 'ralph init --prompt ${OTHER_PROMPTS[0]}' para escolher um, ou 'ralph init' para o ${DEFAULT_PROMPT}.`
+    );
   }
-  const promptDst = path.join(root, cfg.promptFile);
-  const target = chooseTemplate(flags.prompt, existsSync(promptDst) ? inspectPrompt(root, cfg) : null);
+  const existing = inspectPrompt(root, cfg);
+  const target = chooseTemplate(flags.prompt, existing);
   if (target.install && !existsSync(templatePath(target.name))) {
     die(`o template '${target.name}' não está em ${path.join(ralphHome(), "prompts")} — esta instalação do Ralph está incompleta, refaça o clone`);
   }
-  if (target.install && (!existsSync(promptDst) || flags.force)) installPrompt(root, cfg, target.name);
+
+  // `existing` é `null` exatamente quando não há prompt no disco (`inspectPrompt`),
+  // e é essa a pergunta aqui: sem `--force`, só se instala onde não havia nada.
+  const installed = target.install && (!existing || flags.force);
+  if (installed) installPrompt(root, cfg, target.name);
 
   const progress = path.join(root, cfg.progressFile);
   if (!existsSync(progress)) {
@@ -150,9 +174,7 @@ function cmdInit(flags) {
   if (!existsSync(ignore)) writeFileSync(ignore, "logs/\n", "utf8");
 
   process.stdout.write(`${paint(C.green, "✓")} .ralph/ criado em ${root}\n\n`);
-  process.stdout.write(
-    `  prompt        ${cfg.promptFile}${target.install ? "" : paint(C.dim, ` (${CUSTOM} — preservado; --prompt <nome> sobrescreve)`)}\n`
-  );
+  process.stdout.write(`  prompt        ${cfg.promptFile} ${paint(C.dim, promptNote(target, existing, installed))}\n`);
   process.stdout.write(`  progresso     ${cfg.progressFile}\n`);
   process.stdout.write(
     `  setup         ${cfg.setupScript ?? ".ralph/setup.sh"}${setupChanged ? paint(C.dim, " (instalação do índice de conhecimento adicionada)") : ""}\n`
@@ -346,7 +368,7 @@ async function cmdGhLogin(flags) {
       try {
         token = local.execFileSync("gh", ["auth", "token"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
-        die("não consegui obter um token do gh do host — rode 'gh auth login' aqui fora ou passe --token=<valor>");
+        die("não consegui obter um token do gh do host — rode 'gh auth login' aqui fora ou passe --token=SEU_TOKEN");
       }
     }
     process.stdout.write(
@@ -456,7 +478,7 @@ function cmdHelp() {
 ${paint(C.bold, "ralph")} — loop Ralph Wiggum para Claude Code, um contexto novo por iteração.
 
 ${paint(C.bold, "Comandos")}
-  init [--prompt <nome>] [--force]   cria .ralph/ neste repo
+  init [--prompt NOME] [--force]     cria .ralph/ neste repo
   doctor [--night]                   checa docker, sandbox, login, plugins, tarefas
   login [--share-credentials]        autentica o Claude dentro do sandbox
   gh-login [--token[=valor]]         autentica o gh dentro do sandbox
@@ -470,10 +492,10 @@ ${paint(C.bold, "Comandos")}
   rm                                 remove o sandbox deste repo
 
 ${paint(C.bold, "Opções comuns")}
-  --model <nome>     sobrepõe o modelo da iteração (padrão: ${DEFAULTS.model}; com --night, a tag do nightProvider)
-  --prompt <arquivo> usa outro Prompt da iteração
+  --model NOME       sobrepõe o modelo da iteração (padrão: ${DEFAULTS.model}; com --night, a tag do nightProvider)
+  --prompt NOME      usa outro Prompt da iteração
   --night            roda contra o Provedor local (nightProvider no config) em vez da API paga
-  -- <args>          repassa argumentos crus ao claude
+  -- ARGS            repassa argumentos crus ao claude
 
 ${paint(C.bold, "Fluxo típico")}
   cd meu-repo

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   ITERATION_PROMPTS,
+  DEFAULT_PROMPT,
   CUSTOM,
   readProvenance,
   checkDrift,
@@ -96,6 +97,27 @@ test("describeDrift: sem-procedencia lista os templates e o jeito de assumir o a
   assert.equal(level, "warn");
   for (const name of ITERATION_PROMPTS) assert.match(message, new RegExp(name));
   assert.match(message, /custom/);
+});
+
+test("describeDrift: sem-procedencia nomeia o padrão e o comando sem flag que o instala", () => {
+  const { message } = describeDrift({ state: "sem-procedencia", template: null }, ".ralph/prompt.md");
+  assert.match(message, new RegExp(`ralph init --force\\s+\\(instala o ${DEFAULT_PROMPT}\\)`));
+});
+
+/**
+ * As linhas que o operador cola no shell. O marcador `<!-- ralph:prompt custom -->`
+ * fica de fora de propósito — ele não é comando, é o texto que vai para dentro do
+ * arquivo; `ralph:prompt` não tem espaço depois de `ralph`, e é isso que o separa.
+ */
+const shellLines = (message) => message.split("\n").filter((l) => /ralph /.test(l));
+
+test("describeDrift: nenhum comando do aviso tem '<' ou '>' — cola no PowerShell sem editar", () => {
+  for (const state of ["sem-procedencia", "deriva"]) {
+    const { message } = describeDrift({ state, template: "entropy" }, ".ralph/prompt.md");
+    const commands = shellLines(message);
+    assert.ok(commands.length > 0, `o aviso de ${state} não sugere comando nenhum`);
+    for (const line of commands) assert.doesNotMatch(line, /[<>]/);
+  }
 });
 
 // ------------------------------------------------------- templates distribuídos --

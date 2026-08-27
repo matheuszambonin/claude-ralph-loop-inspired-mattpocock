@@ -329,7 +329,7 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
   if (branch && !allowBranch && (cfg.protectedBranches ?? []).includes(branch)) {
     throw new Error(
       `você está em '${branch}'. Ralph commita a cada iteração — crie uma branch ` +
-        `(git switch -c ralph/<assunto>) ou passe --allow-branch para assumir o risco.`
+        `(git switch -c ralph/meu-assunto) ou passe --allow-branch para assumir o risco.`
     );
   }
 
@@ -341,7 +341,9 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
   if (prompt?.resynced) {
     process.stdout.write(paint(C.yellow, `  ${cfg.promptFile} reinstalado a partir do template '${prompt.template}'\n`));
   } else if (prompt?.state === "sem-procedencia") {
-    process.stdout.write(paint(C.yellow, `  ! ${describeDrift(prompt, cfg.promptFile).message}\n`));
+    // O aviso é multi-linha (os caminhos que o operador tem), e aqui ele entra
+    // recuado dentro do cabeçalho da iteração: as linhas seguintes acompanham.
+    process.stdout.write(paint(C.yellow, `  ! ${describeDrift(prompt, cfg.promptFile).message.replace(/\n/g, "\n  ")}\n`));
   }
 
   const created = await ensureSandbox(cfg.sandboxName, root, cfg);

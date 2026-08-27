@@ -343,12 +343,18 @@ Duas saídas dessa regra:
 - **É seu de propósito** — troque o nome por `custom`
   (`<!-- ralph:prompt custom -->`). O Ralph passa a calar sobre esse arquivo e
   nunca mais o toca; nem `ralph init --force`, que só o sobrescreve se você
-  nomear um template (`--prompt <nome>`).
+  nomear um template (`--force --prompt <nome>`).
 - **Não tem a linha nenhuma** — é o caso de todo `.ralph/prompt.md` criado
-  antes desta versão. O `doctor` lista os templates e para por aí: adivinhar a
-  origem por semelhança trocaria um loop de entropia por um de implement em
-  silêncio, desfecho pior que a deriva. Rode
-  `ralph init --force --prompt <nome>` para escolher, ou marque como `custom`.
+  antes desta versão. O `doctor` não adivinha a origem: casar por semelhança
+  trocaria um loop de entropia por um de implement em silêncio, desfecho pior
+  que a deriva. Ele oferece os três caminhos, cada comando numa linha e colável
+  como está — `ralph init --force` para o padrão (`implement`), o mesmo com
+  `--prompt entropy` para outro, ou o marcador `custom` para assumir o arquivo.
+
+`ralph init` nomeia na saída o template que instalou
+(`prompt        .ralph/prompt.md (implement)`). Quando não instalou nada — sem
+`--force`, um prompt que já existe fica onde está —, a linha diz `em dia` se o
+arquivo já é a cópia fiel, e `preservado` quando há algo a reinstalar.
 
 ## Comandos
 

@@ -36,7 +36,8 @@ test("init --prompt orientation recusa e diz quais são os prompts de iteração
   const { code, err } = ralph(root, "init", "--prompt", "orientation");
   assert.equal(code, 1);
   assert.match(err, /não é um prompt de iteração/);
-  assert.match(err, /implement\|entropy\|test-coverage/);
+  for (const name of ["implement", "entropy", "test-coverage"]) assert.match(err, new RegExp(name));
+  assert.doesNotMatch(err, /[<>]/);
 });
 
 test("init --force preserva o config do repo em vez de reescrevê-lo dos DEFAULTS", (t) => {
@@ -72,4 +73,37 @@ test("init --force preserva o prompt que o operador reivindicou como custom", (t
   const { out } = ralph(root, "init", "--force");
   assert.equal(promptOf(root), mine);
   assert.match(out, /custom/);
+  assert.match(out, /preservado/);
+});
+
+// A saída do init nomeia o template porque `ralph init --force` sozinho troca um
+// prompt fossilizado pelo implement — calado, era o mesmo desfecho que o ADR-0009
+// recusa quando rejeita adivinhar a origem, entrando pela porta do default (#50).
+test("init nomeia na saída o template que instalou", (t) => {
+  const root = tmpTarget(t);
+  assert.match(ralph(root, "init").out, /prompt\s+\.ralph\/prompt\.md\s+\(implement\)/);
+  assert.match(ralph(root, "init", "--force", "--prompt", "entropy").out, /prompt\s+\.ralph\/prompt\.md\s+\(entropy\)/);
+});
+
+// Prompt em dia não tem pendência: prescrever '--force' aqui seria mandar rodar
+// um no-op, e a linha leria como se algo estivesse por fazer.
+test("init sobre um prompt em dia nomeia o template sem mandar rodar nada", (t) => {
+  const root = tmpTarget(t);
+  ralph(root, "init", "--prompt", "entropy");
+
+  const { out } = ralph(root, "init");
+  assert.match(out, /prompt\s+\.ralph\/prompt\.md\s+\(entropy — em dia\)/);
+  assert.doesNotMatch(out.split("\n").find((l) => l.includes("prompt  ")), /--force/);
+});
+
+test("init sem --force não diz que instalou o que não instalou", (t) => {
+  const root = tmpTarget(t);
+  ralph(root, "init", "--prompt", "entropy");
+  const mine = "prompt do operador, sem cabeçalho\n";
+  writeFileSync(path.join(root, ".ralph", "prompt.md"), mine, "utf8");
+
+  const { out } = ralph(root, "init");
+  assert.equal(promptOf(root), mine);
+  assert.doesNotMatch(out, /prompt\s+\.ralph\/prompt\.md\s+\(implement\)/);
+  assert.match(out, /preservado/);
 });

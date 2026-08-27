@@ -10,6 +10,12 @@ import { ralphHome } from "./paths.mjs";
  */
 export const ITERATION_PROMPTS = ["implement", "entropy", "test-coverage"];
 
+/** O que o `init` instala quando ninguém — nem a flag, nem o arquivo — diz qual. */
+export const DEFAULT_PROMPT = "implement";
+
+/** Os outros. O primeiro é o exemplo que as mensagens citam quando precisam de um nome real. */
+export const OTHER_PROMPTS = ITERATION_PROMPTS.filter((name) => name !== DEFAULT_PROMPT);
+
 /** O valor que o operador escreve no cabeçalho para assumir o arquivo. */
 export const CUSTOM = "custom";
 
@@ -88,12 +94,32 @@ export function describeDrift(check, promptFile) {
         level: "warn",
         message:
           (check.declared
-            ? `${promptFile} veio do template '${check.declared}', que este Ralph não distribui`
-            : `${promptFile} não diz de qual template veio, e o Ralph não adivinha`) +
-          ` — rode 'ralph init --force --prompt <${ITERATION_PROMPTS.join("|")}>' para reinstalar o que você quer, ` +
-          `ou assuma o arquivo pondo '<!-- ralph:prompt ${CUSTOM} -->' numa linha do topo dele`,
+            ? `${promptFile} veio do template '${check.declared}', que este Ralph não distribui.`
+            : `${promptFile} não diz de qual template veio, e o Ralph não adivinha.`) + provenancePaths(),
       };
   }
+}
+
+/**
+ * Os três caminhos de um prompt sem procedência, um por linha, cada comando
+ * colável como está.
+ *
+ * Nada de `--prompt <a|b|c>`: no PowerShell `<` e `>` são operadores reservados,
+ * e a linha morria no parser antes de virar comando; quem tirava os sinais e
+ * deixava `--prompt` pelado caía em `'true' não é um prompt de iteração`, porque
+ * a flag sem valor vira `true` (issue #50).
+ *
+ * O padrão vem nomeado porque `ralph init --force`, sem `--prompt` nenhum, já
+ * resolve o aviso — a mensagem antiga pedia a flag como se fosse obrigatória.
+ */
+function provenancePaths() {
+  const [example, ...rest] = OTHER_PROMPTS;
+  const column = (text) => text.padEnd(38); // onde o parêntese de cada linha começa
+  return (
+    `\n  Padrão:    ${column("ralph init --force")}(instala o ${DEFAULT_PROMPT})` +
+    `\n  Outro:     ${column(`ralph init --force --prompt ${example}`)}(ou ${rest.join(", ")})` +
+    `\n  Já é seu:  ponha '<!-- ralph:prompt ${CUSTOM} -->' numa linha do topo do arquivo`
+  );
 }
 
 /**
@@ -109,7 +135,7 @@ export function describeDrift(check, promptFile) {
 export function chooseTemplate(requested, installed) {
   if (requested) return { name: requested, install: true };
   if (installed?.state === CUSTOM) return { name: null, install: false };
-  return { name: installed?.template ?? "implement", install: true };
+  return { name: installed?.template ?? DEFAULT_PROMPT, install: true };
 }
 
 export function templatePath(name) {
