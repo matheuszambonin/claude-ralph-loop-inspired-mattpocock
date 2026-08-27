@@ -397,18 +397,30 @@ export function describeProbeStart(provider) {
 }
 
 /**
- * Uma prova de contexto que estourou o teto (`contextTimedOut`, issue #56)
- * é reportada como o que é, antes do caso do truncamento: o Provedor pode
- * estar íntegro, e mandar subir `OLLAMA_CONTEXT_LENGTH` ali piora exatamente
- * a lentidão que causou a falha. A ordem alcance → tool_use → timeout →
- * truncamento é o que garante que um Provedor inalcançável nunca receba a
- * prosa da lentidão.
+ * Prosa pro comando que conserta cada reprovação da sonda (CLAUDE.md: "erro
+ * de usuário diz o comando que conserta"). Sonda aprovada em tudo devolve
+ * `null` — nenhuma linha pro `doctor` pintar. A ordem dos ramos é o
+ * comportamento: alcance → timeout → tool_use → truncamento.
  *
- * Prosa pro comando que conserta cada uma das três reprovações (CLAUDE.md:
- * "erro de usuário diz o comando que conserta"). Ordem importa: inalcançável
- * já reprova as outras duas em `probe()`, então checar alcance primeiro nunca
- * mostra um conserto de `tool_use`/canário para quem nem chegou lá. Sonda
- * aprovada em tudo devolve `null` — nenhuma linha pro `doctor` pintar.
+ * Alcance vem primeiro porque um Provedor inalcançável já reprova as outras
+ * provas dentro de `probe()` — checar alcance antes de tudo nunca mostra um
+ * conserto de `tool_use`/canário para quem nem chegou lá.
+ *
+ * O timeout (`contextTimedOut`, issue #56) vem antes dos dois consertos
+ * caros: o Provedor pode estar íntegro, e mandar subir `OLLAMA_CONTEXT_LENGTH`
+ * piora exatamente a lentidão que causou a falha, enquanto trocar a tag do
+ * modelo custa um `ollama pull` de dezenas de GB por um modelo que estava
+ * correto.
+ *
+ * Que ele venha antes do `tool_use` (issue #59) vale sem a sonda distinguir
+ * qual das pernas estourou, e o argumento é o tamanho dos dois prompts, não
+ * uma medição: o canário é dimensionado por `minContext`, centenas de milhares
+ * de caracteres, contra os ~100 bytes do pedido de `tool_use`. Um teto que a
+ * prova pequena não alcança é um teto que a grande também não alcança, então
+ * `contextTimedOut` deve ser verdadeiro sempre que a perna do `tool_use`
+ * estourou por lentidão. Um Provedor que é lento **e** cujo modelo escreve a
+ * chamada como texto recebe primeiro a prosa do teto, de propósito: na dúvida,
+ * prescrever o conserto barato.
  *
  * `minContext` prescreve o mesmo número que o canário exigiu (issue #42) —
  * quem chama passa `provider.minContext`, o mesmo valor que `probe()` usou
@@ -443,15 +455,9 @@ export function describeDegradation(probeResult, minContext, baseUrl, sandboxNam
     }
     return "Provedor local inalcançável. Rode o Ollama do host com OLLAMA_HOST=0.0.0.0 e reinicie o serviço.";
   }
-  if (!probeResult.toolUse) {
-    return (
-      "Provedor local não emite tool_use estruturado — o modelo escreve a chamada de ferramenta como texto, " +
-      "mesmo anunciando a capacidade. Troque nightProvider.model em .ralph/config.json por um modelo que passe na prova."
-    );
-  }
   if (probeResult.contextTimedOut) {
     return (
-      `Prova de contexto do Provedor local não concluiu em ${probeTimeoutSeconds}s. ` +
+      `Prova do Provedor local não concluiu em ${probeTimeoutSeconds}s. ` +
       "O Provedor respondeu — ele pode estar correto, só lento — e não se sabe se ele trunca o prompt. " +
       "Se essa espera é aceitável, suba nightProvider.probeTimeoutSeconds no .ralph/config.json — o night " +
       "mode existe para gastar tempo de máquina ociosa, não para ser rápido. Os consertos que atacam a " +
@@ -459,6 +465,12 @@ export function describeDegradation(probeResult, minContext, baseUrl, sandboxNam
       "em OLLAMA_CONTEXT_LENGTH no host, que precisam bater porque o Ralph nunca envia num_ctx e quem " +
       "dimensiona o KV cache é a variável do host; ou trocar nightProvider.model por um modelo que caiba " +
       "na GPU — `ollama ps` mostra a divisão CPU/GPU por trás da lentidão."
+    );
+  }
+  if (!probeResult.toolUse) {
+    return (
+      "Provedor local não emite tool_use estruturado — o modelo escreve a chamada de ferramenta como texto, " +
+      "mesmo anunciando a capacidade. Troque nightProvider.model em .ralph/config.json por um modelo que passe na prova."
     );
   }
   if (!probeResult.contextOk) {

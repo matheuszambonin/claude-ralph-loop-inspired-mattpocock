@@ -587,6 +587,50 @@ test("describeDegradation: o número da prosa é o teto vigente, não uma consta
   assert.doesNotMatch(msg, /900s/);
 });
 
+// --- a prova que não concluiu não é prova sobre o modelo (issue #59) ---
+
+test("describeDegradation: tool_use reprovado com timeout é relatado como a prova que não concluiu", () => {
+  const probeResult = { reachable: true, toolUse: false, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /não concluiu/);
+  assert.match(msg, /900s/);
+  assert.match(msg, /nightProvider\.probeTimeoutSeconds/);
+});
+
+test("describeDegradation: tool_use reprovado com timeout não manda trocar o modelo por incapaz", () => {
+  // O conserto caro que este ticket existe para não prescrever: um `ollama
+  // pull` de dezenas de GB por uma falha que era do teto, não do modelo. A
+  // prosa do timeout cita nightProvider.model por outro motivo — um modelo que
+  // caiba na GPU —, então o que não pode vazar é o diagnóstico de incapacidade.
+  const probeResult = { reachable: true, toolUse: false, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.doesNotMatch(msg, /não emite tool_use estruturado/);
+  assert.doesNotMatch(msg, /escreve a chamada de ferramenta como texto/);
+});
+
+test("describeDegradation: tool_use reprovado sem timeout continua mandando trocar nightProvider.model", () => {
+  const probeResult = { reachable: true, toolUse: false, contextOk: false, contextTimedOut: false };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /nightProvider\.model/);
+  assert.match(msg, /escreve a chamada de ferramenta como texto/);
+  assert.doesNotMatch(msg, /não concluiu/);
+});
+
+test("describeDegradation: inalcançável com tool_use reprovado e timeout continua recebendo a prosa de alcance", () => {
+  const probeResult = {
+    reachable: false,
+    reachableFromHost: false,
+    reachableFromSandbox: false,
+    toolUse: false,
+    contextOk: false,
+    contextTimedOut: true,
+  };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /OLLAMA_HOST=0\.0\.0\.0/);
+  assert.doesNotMatch(msg, /não concluiu/);
+  assert.doesNotMatch(msg, /nightProvider\.model/);
+});
+
 // --- o cliente da biblioteca padrão, que aceita teto arbitrário (issue #57) ---
 //
 // O `fetch` global morre aos 300s pelo `headersTimeout` do undici, que a API
