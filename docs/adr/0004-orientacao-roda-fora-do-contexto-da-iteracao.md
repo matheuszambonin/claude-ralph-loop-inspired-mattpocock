@@ -24,7 +24,10 @@ Isso mata a premissa de que trocar o modelo das tarefas simples economiza:
 output é 0,2% da conta. O que economiza é **não carregar**. A Orientação hoje
 deixa ~56k no contexto e são relidos pelos ~87 turnos seguintes, para produzir
 um resumo que caberia em 3k. Isolá-la num subagente vale −$0,75 (−26%);
-rodá-la em haiku em vez de sonnet, mais −$0,26 (−9%). Juntas, −35%.
+rodá-la em haiku em vez de sonnet, mais −$0,26 (−9%). Juntas, −35%. Os três
+números são **projeção**: saem da tabela acima, medida antes de o isolamento
+existir. A medição com ele rodando está pendente na #49 — até ela fechar, é o
+que se esperava economizar, não o que se economizou.
 
 Pôr `"model": "haiku"` no config economiza −$1,41 (−50%), custa zero linha de
 código, e foi **rejeitado**: aí o haiku implementa o ticket. O loop existe para
@@ -38,18 +41,25 @@ para consertá-lo, e um resumo do erro é exatamente o que ele não pode receber
 
 ## Consequences
 
-Subagente não herda o cache do pai. Medido: 16.098 tokens de cache write só
-para responder "2+2" — ~$0,02 a $0,03 fixos por invocação. É barato contra os
-$0,75, e é o teto de quantas vezes vale delegar: uma.
+Subagente não herda o cache do pai. A primeira medida — 16.098 tokens de cache
+write para responder "2+2", ~$0,02 a $0,03 — pegou o piso, não o caso: "2+2"
+não tem contexto para reler, e este ADR existe para dizer que 99,7% da conta é
+contexto relido. Uma Orientação de verdade custa **~$0,21 por invocação**; duas
+invocações medidas leram 650k e 1,04M de tokens de cache, porque o subagente
+relê o próprio contexto a cada turno exatamente como o pai relê o dele.
+
+Continua barato contra os $0,75, e endurece o teto de quantas vezes vale
+delegar: uma. Na segunda invocação já se foram $0,42 dos $0,75.
 
 A whitelist de tools é estrita e é o que segura o custo do subagente: reduzi-la
 levou o `subagent_tokens` de 16.192 para 3.728 (−77%). `Bash` sozinho custa
 ~2k, e `Bash(gh *)` **não** restringe nada — o subagente recebe `Bash` puro.
 Sem `Edit` e sem `Write`: quem orienta não escreve.
 
-A medição por modelo vem antes de tudo. A variação natural de uma iteração vai
-de $0,22 a $4,11; sem o custo quebrado por modelo no relatório do loop, 26% de
-economia é indistinguível de 0%, e as duas decisões acima viram fé.
+A medição por modelo vinha antes de tudo, e foi feita (`e19db04`). O que falta
+é rodar: a variação natural de uma iteração vai de $0,22 a $4,11, e enquanto
+poucas iterações não separarem 26% de economia de 0%, as duas decisões acima
+seguem sendo fé. A #49 é onde isso fecha.
 
 O haiku tem janela de 200K contra 1M do sonnet. Um repositório grande pode
 estourar a janela na Orientação. Não há tratamento: se degradar, troca-se
