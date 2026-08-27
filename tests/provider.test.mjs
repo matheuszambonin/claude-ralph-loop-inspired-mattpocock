@@ -9,6 +9,7 @@ import {
   probeBoth,
   preload,
   describeAvailability,
+  describeProbeStart,
   describeDegradation,
   httpJson,
 } from "../src/provider.mjs";
@@ -442,6 +443,25 @@ test("describeAvailability: nomeia o Provedor local e o modelo, não o Ollama", 
 
 test("describeAvailability: Provedor anthropic não produz linha nenhuma", () => {
   assert.equal(describeAvailability(resolve(baseCfg(), { night: false })), null);
+});
+
+test("describeProbeStart: anuncia a sonda do Provedor local e o teto vigente", () => {
+  const cfg = baseCfg({ nightProvider: { model: "qwen3-coder:30b" } });
+  const msg = describeProbeStart(resolve(cfg, { night: true }));
+  assert.match(msg, /Provedor local/);
+  assert.match(msg, /qwen3-coder:30b/);
+  assert.match(msg, new RegExp(`${DEFAULTS.nightProvider.probeTimeoutSeconds}s`));
+});
+
+test("describeProbeStart: o teto citado é o que o operador declarou, não o padrão", () => {
+  const cfg = baseCfg({ nightProvider: { probeTimeoutSeconds: 2400 } });
+  const msg = describeProbeStart(resolve(cfg, { night: true }));
+  assert.match(msg, /2400s/);
+  assert.doesNotMatch(msg, new RegExp(`${DEFAULTS.nightProvider.probeTimeoutSeconds}s`));
+});
+
+test("describeProbeStart: Provedor anthropic não produz linha nenhuma", () => {
+  assert.equal(describeProbeStart(resolve(baseCfg(), { night: false })), null);
 });
 
 test("describeDegradation: sonda aprovada em tudo devolve null", () => {

@@ -369,6 +369,34 @@ export function describeAvailability(provider) {
 }
 
 /**
+ * Prosa que o `doctor --night` e o preparo da iteração imprimem **antes** de
+ * bloquear na sonda (issue #58). Nada é medido e nada é decidido aqui: a
+ * sonda continua sendo `probeBoth`, e o veredito continua vindo de
+ * `describeDegradation`.
+ *
+ * Ela existe porque a sonda é a operação mais cara que o Ralph faz antes de
+ * qualquer trabalho útil, e desde que o teto virou do operador (issue #57) a
+ * espera pode passar de quinze minutos no padrão. Silêncio longo é
+ * indistinguível de travamento, e o operador que não sabe que está esperando
+ * mata o processo. Daí citar o teto vigente — o valor que o operador
+ * declarou, não o padrão — e não só o fato de estar sondando: quem lê precisa
+ * saber quanto a espera pode durar no pior caso. O teto é por prova, não do
+ * bloqueio inteiro: `postMessages` arma o mesmo `probeTimeoutSeconds` nas duas
+ * provas de inferência, e prometer o número como total mentiria pra quem
+ * cronometra.
+ *
+ * `null` para o Provedor da API paga, mesma convenção de
+ * `describeAvailability`: o modo diurno não ganha linha nova.
+ */
+export function describeProbeStart(provider) {
+  if (provider.kind !== "local") return null;
+  return (
+    `Sondando o Provedor local em ${provider.baseUrl} (modelo ${provider.model}) — ` +
+    `tool_use e canário de contexto, cada prova com teto de ${provider.probeTimeoutSeconds}s.`
+  );
+}
+
+/**
  * Uma prova de contexto que estourou o teto (`contextTimedOut`, issue #56)
  * é reportada como o que é, antes do caso do truncamento: o Provedor pode
  * estar íntegro, e mandar subir `OLLAMA_CONTEXT_LENGTH` ali piora exatamente

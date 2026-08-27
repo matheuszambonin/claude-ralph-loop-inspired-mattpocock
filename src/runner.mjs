@@ -30,6 +30,7 @@ import {
   requiresAnthropicAuth,
   probeBoth as probeProviderBoth,
   describeDegradation as describeProviderDegradation,
+  describeProbeStart as describeProviderProbeStart,
   preload as preloadProvider,
 } from "./provider.mjs";
 
@@ -362,6 +363,7 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
     // As três provas do Provedor (issue #32): falha alta antes da iteração 1,
     // nunca um fallback silencioso pro Claude pago — o operador está dormindo
     // e não veria o aviso a tempo.
+    process.stdout.write(paint(C.dim, `  ${describeProviderProbeStart(provider)}\n`));
     const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
     const failure = describeProviderDegradation(
       probeResult,
