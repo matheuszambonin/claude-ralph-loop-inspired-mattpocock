@@ -1,14 +1,17 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { execCapture } from "./sandbox.mjs";
 import { dockerHostAddress, translateLoopback } from "./paths.mjs";
 
 // Carimbo por sandbox, mesmo padrão do `.ralph-bootstrap` em runner.mjs: um
 // arquivo dentro do próprio sandbox, checado antes de repetir o trabalho.
 // Aqui o conteúdo importa (não só a existência), porque o que se carimba é o
-// resultado da sonda, não so o fato de ter rodado. Não guarda a identidade do
-// que foi sondado (endereço, modelo) — trocar o provedor declarado não
-// invalida o carimbo até o sandbox ser recriado; issue #21 resolve isso.
+// resultado da sonda, não so o fato de ter rodado. Guarda a identidade do que
+// foi sondado (endereço, modelo, hash da chave) desde a issue #21 — sem isso,
+// trocar o provedor declarado ou consertar uma chave inválida não invalidava
+// o carimbo até o sandbox ser recriado, e o operador não tinha erro nenhum
+// para ler.
 const EMBEDDING_PROBE_STAMP = "/home/agent/.claude/.ralph-embedding-probe";
 // Fallback quando o operador não declara CRG_OPENAI_BASE_URL — o mesmo
 // endereço que a sonda usava sozinha antes da issue #19.
@@ -253,12 +256,47 @@ async function requestEmbedding(sandboxName, target, execImpl) {
   return result.stdout.trim() === "yes";
 }
 
+// Hash curto, não a chave em texto — o carimbo é arquivo em disco dentro do
+// sandbox, e segredo não vai para disco em texto claro (issue #21).
+// `node:crypto`, biblioteca padrão, sem dependência nova.
+function hashApiKey(apiKey) {
+  return apiKey ? createHash("sha256").update(apiKey).digest("hex").slice(0, 12) : "";
+}
+
+/**
+ * Conteúdo gravado em `EMBEDDING_PROBE_STAMP`: o resultado da sonda seguido
+ * da identidade do provedor sondado — endereço, modelo, hash da chave — cada
+ * um em sua própria linha (issue #21). É o que `decodeProbeStamp` compara
+ * contra o alvo atual para decidir se o carimbo ainda vale.
+ */
+export function encodeProbeStamp(reachable, target) {
+  return [reachable ? "reachable" : "unreachable", target.baseUrl, target.model, hashApiKey(target.apiKey)].join("\n");
+}
+
+/**
+ * Resultado gravado em `raw` — `true`/`false` — se e só se a identidade
+ * carimbada bate com `target` (mesmo endereço, mesmo modelo, mesmo hash de
+ * chave). Qualquer divergência devolve `null`, tratada como carimbo ausente
+ * pelo chamador: a sonda roda de novo. Cobre tanto o provedor ter mudado
+ * quanto o formato antigo, sem identidade nenhuma (issue #21) — as duas
+ * situações são "não posso confiar neste carimbo".
+ */
+export function decodeProbeStamp(raw, target) {
+  // .trim() por linha, não só nas pontas do arquivo inteiro — um `cat` real
+  // por `docker sandbox exec` pode devolver alguma quebra de linha a mais
+  // (ex.: CRLF) sem que isso signifique carimbo divergente.
+  const [result, baseUrl, model, keyHash] = raw.split("\n").map((line) => line.trim());
+  if (result !== "reachable" && result !== "unreachable") return null;
+  if (baseUrl !== target.baseUrl || model !== target.model || keyHash !== hashApiKey(target.apiKey)) return null;
+  return result === "reachable";
+}
+
 /**
  * Prova, de dentro do sandbox, que o provedor de embeddings declarado
  * responde de verdade (issue #19). Carimbado por sandbox (ver
  * `EMBEDDING_PROBE_STAMP`) para não repetir a prova a cada iteração — o
- * sandbox precisa ser recriado para a sonda rodar de novo, mesmo padrão de
- * invalidação do `.ralph-bootstrap`.
+ * sandbox precisa ser recriado, ou a identidade sondada precisa mudar
+ * (issue #21), para a sonda rodar de novo.
  *
  * `embeddingTarget` ausente (sem `CRG_OPENAI_MODEL` declarado em lugar
  * nenhum) devolve reprovado sem tocar sandbox nem carimbo — não há o que
@@ -274,13 +312,19 @@ export async function probe(sandboxName, embeddingEnv = {}, { execImpl = execCap
   if (!target) return { reachable: false, address: null, isOllama: false };
 
   const cached = await execImpl(sandboxName, ["cat", EMBEDDING_PROBE_STAMP]);
-  const value = cached.stdout.trim();
-  if (cached.code === 0 && (value === "reachable" || value === "unreachable")) {
-    return { reachable: value === "reachable", address: target.baseUrl, isOllama: target.isOllama };
+  const cachedReachable = cached.code === 0 ? decodeProbeStamp(cached.stdout, target) : null;
+  if (cachedReachable !== null) {
+    return { reachable: cachedReachable, address: target.baseUrl, isOllama: target.isOllama };
   }
 
+  // `cat > arquivo` lendo do stdin, não `echo conteúdo > arquivo` — o
+  // conteúdo agora carrega `target.baseUrl`/`target.model`, que o operador
+  // controla e podem ter caractere de shell; interpolar no script reabriria
+  // o mesmo risco que `EMBEDDING_PROBE_SCRIPT` já evita para a chave.
   const reachable = await requestEmbedding(sandboxName, target, execImpl);
-  await execImpl(sandboxName, ["bash", "-lc", `echo ${reachable ? "reachable" : "unreachable"} > ${EMBEDDING_PROBE_STAMP}`]);
+  await execImpl(sandboxName, ["bash", "-lc", `cat > ${EMBEDDING_PROBE_STAMP}`], {
+    stdin: encodeProbeStamp(reachable, target),
+  });
 
   return { reachable, address: target.baseUrl, isOllama: target.isOllama };
 }

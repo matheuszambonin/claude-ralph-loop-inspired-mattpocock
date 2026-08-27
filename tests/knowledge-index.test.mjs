@@ -16,6 +16,8 @@ import {
   resolveEmbeddingEnv,
   embeddingTarget,
   probe,
+  encodeProbeStamp,
+  decodeProbeStamp,
   CRG_ID,
 } from "../src/knowledge-index.mjs";
 
@@ -503,7 +505,9 @@ function isEmbeddingRequestCall(argv) {
 /**
  * Executor injetado com estado de carimbo próprio — imita o sandbox real o
  * bastante para provar a sequência (`cat` lê, `bash -lc` com `curl` sonda,
- * `bash -lc` grava) sem precisar de um sandbox de verdade.
+ * `bash -lc` grava) sem precisar de um sandbox de verdade. A gravação passou
+ * a ir por `stdin` (`cat > arquivo`), não mais interpolada no script (issue
+ * #21), então o fake grava `opts.stdin` como o novo carimbo.
  */
 function fakeSandboxExec({ stamp = null, requestResult = "yes" } = {}) {
   const calls = [];
@@ -517,7 +521,7 @@ function fakeSandboxExec({ stamp = null, requestResult = "yes" } = {}) {
       return { code: 0, stdout: requestResult, stderr: "" };
     }
     if (argv[0] === "bash") {
-      currentStamp = argv[2].includes("echo reachable") ? "reachable" : "unreachable";
+      currentStamp = opts.stdin;
       return { code: 0, stdout: "", stderr: "" };
     }
     throw new Error(`chamada inesperada: ${argv[0]}`);
@@ -526,7 +530,8 @@ function fakeSandboxExec({ stamp = null, requestResult = "yes" } = {}) {
 }
 
 test("probe: carimbo válido devolve o resultado gravado sem disparar pedido de embedding novo", async () => {
-  const { calls, execImpl } = fakeSandboxExec({ stamp: "reachable" });
+  const target = embeddingTarget(EMBEDDING_ENV);
+  const { calls, execImpl } = fakeSandboxExec({ stamp: encodeProbeStamp(true, target) });
   const result = await probe("sbx", EMBEDDING_ENV, { execImpl });
   assert.equal(result.reachable, true);
   assert.equal(calls.length, 1);
@@ -541,7 +546,7 @@ test("probe: carimbo ausente dispara a sonda e grava o resultado", async () => {
     calls.map((c) => c.argv[0]),
     ["cat", "bash", "bash"]
   );
-  assert.equal(getStamp(), "reachable");
+  assert.match(getStamp(), /^reachable\n/);
 });
 
 test("probe: carimbo com conteúdo inesperado é tratado como ausente", async () => {
@@ -567,6 +572,117 @@ test("probe: sonda malsucedida grava carimbo unreachable e devolve endereço/isO
   assert.equal(result.reachable, false);
   assert.equal(result.isOllama, true);
   assert.match(result.address, /:11434\/v1$/);
+});
+
+// --- o carimbo guarda a identidade do que foi sondado (issue #21) ---
+
+test("probe: trocar CRG_OPENAI_BASE_URL invalida o carimbo e re-sonda", async () => {
+  const stamp = encodeProbeStamp(true, embeddingTarget(EMBEDDING_ENV));
+  const changedEnv = { ...EMBEDDING_ENV, CRG_OPENAI_BASE_URL: "http://outro-provedor:8080/v1" };
+  const { calls, execImpl } = fakeSandboxExec({ stamp, requestResult: "yes" });
+  await probe("sbx", changedEnv, { execImpl });
+  assert.deepEqual(
+    calls.map((c) => c.argv[0]),
+    ["cat", "bash", "bash"]
+  );
+});
+
+test("probe: trocar CRG_OPENAI_MODEL invalida o carimbo e re-sonda", async () => {
+  const stamp = encodeProbeStamp(true, embeddingTarget(EMBEDDING_ENV));
+  const changedEnv = { ...EMBEDDING_ENV, CRG_OPENAI_MODEL: "outro-modelo" };
+  const { calls, execImpl } = fakeSandboxExec({ stamp, requestResult: "yes" });
+  await probe("sbx", changedEnv, { execImpl });
+  assert.deepEqual(
+    calls.map((c) => c.argv[0]),
+    ["cat", "bash", "bash"]
+  );
+});
+
+test("probe: trocar CRG_OPENAI_API_KEY invalida o carimbo e re-sonda", async () => {
+  const stamp = encodeProbeStamp(true, embeddingTarget({ ...EMBEDDING_ENV, CRG_OPENAI_API_KEY: "sk-velha" }));
+  const changedEnv = { ...EMBEDDING_ENV, CRG_OPENAI_API_KEY: "sk-nova" };
+  const { calls, execImpl } = fakeSandboxExec({ stamp, requestResult: "yes" });
+  await probe("sbx", changedEnv, { execImpl });
+  assert.deepEqual(
+    calls.map((c) => c.argv[0]),
+    ["cat", "bash", "bash"]
+  );
+});
+
+test("probe: declarar CRG_OPENAI_API_KEY onde antes não havia nenhuma invalida o carimbo e re-sonda", async () => {
+  const stamp = encodeProbeStamp(true, embeddingTarget(EMBEDDING_ENV));
+  const changedEnv = { ...EMBEDDING_ENV, CRG_OPENAI_API_KEY: "sk-nova" };
+  const { calls, execImpl } = fakeSandboxExec({ stamp, requestResult: "yes" });
+  await probe("sbx", changedEnv, { execImpl });
+  assert.deepEqual(
+    calls.map((c) => c.argv[0]),
+    ["cat", "bash", "bash"]
+  );
+});
+
+test("probe: configuração inalterada não re-sonda", async () => {
+  const stamp = encodeProbeStamp(false, embeddingTarget(EMBEDDING_ENV));
+  const { calls, execImpl } = fakeSandboxExec({ stamp });
+  const result = await probe("sbx", EMBEDDING_ENV, { execImpl });
+  assert.equal(result.reachable, false);
+  assert.deepEqual(
+    calls.map((c) => c.argv[0]),
+    ["cat"]
+  );
+});
+
+test("probe: a chave nunca aparece em texto no carimbo gravado", async () => {
+  const env = { ...EMBEDDING_ENV, CRG_OPENAI_API_KEY: "sk-super-secreta" };
+  const { execImpl, getStamp } = fakeSandboxExec({ stamp: null, requestResult: "yes" });
+  await probe("sbx", env, { execImpl });
+  assert.ok(!getStamp().includes("sk-super-secreta"));
+});
+
+// --- encodeProbeStamp / decodeProbeStamp (issue #21) ---
+
+const SOME_TARGET = { baseUrl: "http://x:11434/v1", model: "algum-modelo", apiKey: "sk-1" };
+
+test("decodeProbeStamp: identidade batendo devolve o resultado gravado", () => {
+  assert.equal(decodeProbeStamp(encodeProbeStamp(true, SOME_TARGET), SOME_TARGET), true);
+  assert.equal(decodeProbeStamp(encodeProbeStamp(false, SOME_TARGET), SOME_TARGET), false);
+});
+
+test("decodeProbeStamp: endereço divergente devolve null", () => {
+  const raw = encodeProbeStamp(true, SOME_TARGET);
+  assert.equal(decodeProbeStamp(raw, { ...SOME_TARGET, baseUrl: "http://y:11434/v1" }), null);
+});
+
+test("decodeProbeStamp: modelo divergente devolve null", () => {
+  const raw = encodeProbeStamp(true, SOME_TARGET);
+  assert.equal(decodeProbeStamp(raw, { ...SOME_TARGET, model: "outro-modelo" }), null);
+});
+
+test("decodeProbeStamp: chave divergente devolve null", () => {
+  const raw = encodeProbeStamp(true, SOME_TARGET);
+  assert.equal(decodeProbeStamp(raw, { ...SOME_TARGET, apiKey: "sk-2" }), null);
+});
+
+test("decodeProbeStamp: chave ausente nos dois lados ainda bate (provedor sem autenticação)", () => {
+  const target = { ...SOME_TARGET, apiKey: "" };
+  assert.equal(decodeProbeStamp(encodeProbeStamp(true, target), target), true);
+});
+
+test("decodeProbeStamp: quebra de linha a mais (CRLF de um `cat` real) não invalida um carimbo que bate", () => {
+  const raw = encodeProbeStamp(true, SOME_TARGET).split("\n").join("\r\n");
+  assert.equal(decodeProbeStamp(raw, SOME_TARGET), true);
+});
+
+test('decodeProbeStamp: formato antigo sem identidade (só "reachable") devolve null', () => {
+  assert.equal(decodeProbeStamp("reachable", SOME_TARGET), null);
+});
+
+test("decodeProbeStamp: conteúdo irreconhecível devolve null", () => {
+  assert.equal(decodeProbeStamp("garbage", SOME_TARGET), null);
+});
+
+test("encodeProbeStamp: a chave nunca aparece em texto no carimbo", () => {
+  const raw = encodeProbeStamp(true, { ...SOME_TARGET, apiKey: "sk-super-secreta" });
+  assert.ok(!raw.includes("sk-super-secreta"));
 });
 
 // --- sonda usa curl, não o fetch do Node, para respeitar o proxy do docker sandbox (issue #47) ---
