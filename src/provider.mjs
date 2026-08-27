@@ -94,24 +94,51 @@ function canaryPrompt(minContext) {
   );
 }
 
+/**
+ * Teto de cada prova de `/v1/messages`, escolhido aqui (issue #56). O valor
+ * é o mesmo que valia antes, mas ele deixou de ser herdado: até esta issue os
+ * 300s vinham do `headersTimeout` do undici por baixo do `fetch` global —
+ * nenhuma linha do projeto o escolheu, e uma mudança de default no Node
+ * mudaria o comportamento do produto sem ninguém tocar no repositório.
+ */
+export const PROBE_TIMEOUT_MS = 300_000;
+
 async function postMessages(fetchImpl, baseUrl, body) {
   const res = await fetchImpl(joinUrl(baseUrl, "/v1/messages"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`status ${res.status}`);
   return res.json();
 }
 
 /**
+ * Distingue "o teto disparou" de qualquer outra falha do pedido. `fetch`
+ * rejeita com `TimeoutError` quando o `AbortSignal.timeout` acima estoura, e
+ * com `AbortError` nos abortos genéricos; um 500 do Provedor chega aqui como
+ * `Error` comum e não é lentidão.
+ */
+function isTimeout(err) {
+  const name = err?.name ?? err?.cause?.name;
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/**
  * Impura, mas só de rede (issue #32): faz as três provas do Provedor local a
  * partir do host, com `fetch` nativo — zero dependência nova. Devolve
- * `{ reachable, toolUse, contextOk }`.
+ * `{ reachable, toolUse, contextOk, contextTimedOut }`.
  *
  * Inalcançável (erro de rede ou `/api/tags` não responde) encurta as outras
  * duas provas para reprovadas: sem alcance não há como testar o resto, e uma
  * exceção de rede nunca escapa daqui — quem chama sempre recebe um objeto.
+ *
+ * A prova de contexto que não conclui em `PROBE_TIMEOUT_MS` volta como
+ * `contextTimedOut` (issue #56), separada do truncamento: `contextOk` é falso
+ * nos dois casos — o significado de hoje, para quem lê só ele —, mas só um
+ * deles é prova de que o Provedor corta o prompt. `reachable` continua
+ * verdadeiro: as pernas de alcance passaram, quem falhou foi a terceira prova.
  *
  * `tool_use` aprova só com bloco `tool_use` no `content` e
  * `stop_reason: "tool_use"` — chamada emitida como texto solto reprova, ainda
@@ -125,7 +152,7 @@ async function postMessages(fetchImpl, baseUrl, body) {
  * o operador configurou.
  */
 export async function probe(provider, { fetchImpl = fetch } = {}) {
-  const unreachable = { reachable: false, toolUse: false, contextOk: false };
+  const unreachable = { reachable: false, toolUse: false, contextOk: false, contextTimedOut: false };
   try {
     const tags = await fetchImpl(joinUrl(provider.baseUrl, "/api/tags"));
     if (!tags.ok) return unreachable;
@@ -147,6 +174,7 @@ export async function probe(provider, { fetchImpl = fetch } = {}) {
   }
 
   let contextOk = false;
+  let contextTimedOut = false;
   try {
     const canaryRes = await postMessages(fetchImpl, provider.baseUrl, {
       model: provider.model,
@@ -155,11 +183,12 @@ export async function probe(provider, { fetchImpl = fetch } = {}) {
     });
     const answered = (canaryRes.content ?? []).map((b) => b.text ?? "").join("");
     contextOk = answered.includes(CANARY_START) && !answered.includes(CANARY_END);
-  } catch {
+  } catch (err) {
     contextOk = false;
+    contextTimedOut = isTimeout(err);
   }
 
-  return { reachable: true, toolUse, contextOk };
+  return { reachable: true, toolUse, contextOk, contextTimedOut };
 }
 
 /**
@@ -264,6 +293,13 @@ export function describeAvailability(provider) {
 }
 
 /**
+ * Uma prova de contexto que estourou o teto (`contextTimedOut`, issue #56)
+ * é reportada como o que é, antes do caso do truncamento: o Provedor pode
+ * estar íntegro, e mandar subir `OLLAMA_CONTEXT_LENGTH` ali piora exatamente
+ * a lentidão que causou a falha. A ordem alcance → tool_use → timeout →
+ * truncamento é o que garante que um Provedor inalcançável nunca receba a
+ * prosa da lentidão.
+ *
  * Prosa pro comando que conserta cada uma das três reprovações (CLAUDE.md:
  * "erro de usuário diz o comando que conserta"). Ordem importa: inalcançável
  * já reprova as outras duas em `probe()`, então checar alcance primeiro nunca
@@ -309,10 +345,21 @@ export function describeDegradation(probeResult, minContext, baseUrl, sandboxNam
       "mesmo anunciando a capacidade. Troque nightProvider.model em .ralph/config.json por um modelo que passe na prova."
     );
   }
+  if (probeResult.contextTimedOut) {
+    return (
+      `Prova de contexto do Provedor local não concluiu em ${Math.round(PROBE_TIMEOUT_MS / 1000)}s. ` +
+      "O Provedor respondeu — ele pode estar correto, só lento — e não se sabe se ele trunca o prompt. " +
+      "Os consertos são baixar o contexto declarado, em nightProvider.minContext no .ralph/config.json e " +
+      "em OLLAMA_CONTEXT_LENGTH no host, que precisam bater porque o Ralph nunca envia num_ctx e quem " +
+      "dimensiona o KV cache é a variável do host; ou trocar nightProvider.model por um modelo que caiba " +
+      "na GPU — `ollama ps` mostra a divisão CPU/GPU por trás da lentidão."
+    );
+  }
   if (!probeResult.contextOk) {
     return (
       "Provedor local trunca o prompt em silêncio antes do fim do contexto. Rode o Ollama do host com " +
-      `OLLAMA_CONTEXT_LENGTH=${minContext} e reinicie o serviço.`
+      `OLLAMA_CONTEXT_LENGTH=${minContext} e reinicie o serviço — esse número e nightProvider.minContext ` +
+      "são um par que precisa bater, porque o Ralph nunca envia num_ctx."
     );
   }
   return null;

@@ -10,6 +10,7 @@ import {
   preload,
   describeAvailability,
   describeDegradation,
+  PROBE_TIMEOUT_MS,
 } from "../src/provider.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 
@@ -120,17 +121,25 @@ function jsonResponse(body) {
 
 /** fetchImpl injetado: `/api/tags` sempre aprova, `/v1/messages` devolve a
  *  resposta de tool_use quando o corpo declara `tools`, senão a do canário. */
-function mockFetch({ toolUseResponse, canaryAnswer }) {
+function mockFetch({ toolUseResponse, canaryAnswer, canaryError }) {
   return async (url, opts) => {
     if (url.endsWith("/api/tags")) return jsonResponse({});
     if (url.endsWith("/v1/messages")) {
       const body = JSON.parse(opts.body);
       if (body.tools) return jsonResponse(toolUseResponse);
+      if (canaryError) throw canaryError;
       return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: canaryAnswer }] });
     }
     throw new Error("url inesperada: " + url);
   };
 }
+
+/** O que o `fetch` lança quando o `AbortSignal.timeout` da sonda dispara. */
+function timeoutError() {
+  return Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+}
+
+const APPROVED_TOOL_USE = { stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] };
 
 test("probe: aprova tool_use quando a resposta traz bloco tool_use e stop_reason tool_use", async () => {
   const fetchImpl = mockFetch({
@@ -175,7 +184,7 @@ test("probe: porta fechada (fetchImpl lança) devolve reachable false sem propag
     throw new Error("ECONNREFUSED");
   };
   const result = await probe(fakeProvider(), { fetchImpl });
-  assert.deepEqual(result, { reachable: false, toolUse: false, contextOk: false });
+  assert.deepEqual(result, { reachable: false, toolUse: false, contextOk: false, contextTimedOut: false });
 });
 
 // --- o canário prova o minContext declarado (issue #42) ---
@@ -231,7 +240,57 @@ test("probe: devolve só reachable, toolUse e contextOk — nada da resposta bru
     canaryAnswer: "A senha é SENHA_INICIAL",
   });
   const result = await probe(fakeProvider(), { fetchImpl });
-  assert.deepEqual(Object.keys(result).sort(), ["contextOk", "reachable", "toolUse"]);
+  assert.deepEqual(Object.keys(result).sort(), ["contextOk", "contextTimedOut", "reachable", "toolUse"]);
+});
+
+// --- lentidão não é truncamento (issue #56) ---
+
+test("probe: canário que estoura o teto marca contextTimedOut, e o alcance continua provado", async () => {
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryError: timeoutError() });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  // As duas pernas de alcance passaram; quem falhou foi só a terceira prova.
+  assert.equal(result.reachable, true);
+  assert.equal(result.toolUse, true);
+  assert.equal(result.contextTimedOut, true);
+  // `contextOk` mantém o significado de hoje — falso nos dois casos — para
+  // não quebrar quem lê só ele.
+  assert.equal(result.contextOk, false);
+});
+
+test("probe: canário truncado não é timeout", async () => {
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryAnswer: "A senha é SENHA_FINAL" });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, false);
+  assert.equal(result.contextTimedOut, false);
+});
+
+test("probe: erro que não é timeout reprova o canário sem chamá-lo de lento", async () => {
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryError: new Error("status 500") });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, false);
+  assert.equal(result.contextTimedOut, false);
+});
+
+test("probe: Provedor inalcançável não reporta timeout de contexto", async () => {
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextTimedOut, false);
+});
+
+test("probe: o teto do canário é o do projeto, não o herdado do fetch", async () => {
+  let signal = null;
+  const fetchImpl = async (url, opts) => {
+    if (url.endsWith("/api/tags")) return jsonResponse({});
+    const body = JSON.parse(opts.body);
+    if (body.tools) return jsonResponse(APPROVED_TOOL_USE);
+    signal = opts.signal;
+    return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: "SENHA_INICIAL" }] });
+  };
+  await probe(fakeProvider(), { fetchImpl });
+  assert.ok(signal instanceof AbortSignal, "o pedido do canário leva o teto da sonda junto");
+  assert.equal(typeof PROBE_TIMEOUT_MS, "number");
 });
 
 // --- alcance provado de dentro do sandbox (issue #46) ---
@@ -299,6 +358,7 @@ test("probeBoth: as duas pernas aprovando devolve alcance com as outras provas d
     reachable: true,
     toolUse: true,
     contextOk: true,
+    contextTimedOut: false,
     reachableFromHost: true,
     reachableFromSandbox: true,
   });
@@ -391,6 +451,52 @@ test("describeDegradation: canário reprovado prescreve o minContext declarado, 
   const msg = describeDegradation({ reachable: true, toolUse: true, contextOk: false }, 65536);
   assert.match(msg, /OLLAMA_CONTEXT_LENGTH=65536/);
   assert.doesNotMatch(msg, /131072/);
+});
+
+test("describeDegradation: truncamento cita o par que precisa bater com OLLAMA_CONTEXT_LENGTH", () => {
+  const msg = describeDegradation({ reachable: true, toolUse: true, contextOk: false }, 65536);
+  assert.match(msg, /minContext/);
+});
+
+// --- a prova que não concluiu não é chamada de truncamento (issue #56) ---
+
+test("describeDegradation: timeout diz que a prova não concluiu e que o Provedor pode estar íntegro", () => {
+  const probeResult = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  assert.match(msg, /não concluiu/);
+  assert.match(msg, /lento/);
+  assert.doesNotMatch(msg, /trunca o prompt em silêncio/);
+});
+
+test("describeDegradation: timeout nomeia o par minContext + OLLAMA_CONTEXT_LENGTH e cita ollama ps", () => {
+  const probeResult = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  assert.match(msg, /minContext/);
+  assert.match(msg, /OLLAMA_CONTEXT_LENGTH/);
+  assert.match(msg, /ollama ps/);
+});
+
+test("describeDegradation: timeout não manda subir OLLAMA_CONTEXT_LENGTH", () => {
+  // Subir o contexto piora exatamente a lentidão que causou a falha — a
+  // prescrição do truncamento (`OLLAMA_CONTEXT_LENGTH=<minContext>`) não pode
+  // vazar para cá.
+  const probeResult = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  assert.doesNotMatch(msg, /OLLAMA_CONTEXT_LENGTH=65536/);
+  assert.match(msg, /baixar o contexto declarado/);
+});
+
+test("describeDegradation: Provedor inalcançável recebe a prosa de alcance, nunca a do timeout", () => {
+  const probeResult = {
+    reachable: false,
+    reachableFromHost: false,
+    reachableFromSandbox: false,
+    contextOk: false,
+    contextTimedOut: true,
+  };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  assert.match(msg, /OLLAMA_HOST=0\.0\.0\.0/);
+  assert.doesNotMatch(msg, /não concluiu/);
 });
 
 // --- a mensagem distingue a perna do host da perna do sandbox (issue #45) ---
