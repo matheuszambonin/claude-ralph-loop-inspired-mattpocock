@@ -73,22 +73,69 @@ export function mountsFor(root, cfg) {
 }
 
 /**
+ * Assinatura estável de "o compartilhamento de arquivos do docker sandbox não
+ * conseguiu ser construído" (issue #24/#26): tipo de recurso + errno. A frase
+ * de panic inteira em volta (`panic detected in openvmm: failed to resolve
+ * resource of type…`) não é contrato de API e muda entre versões do openvmm —
+ * só `virtio:virtiofs` + `EINVAL` são estáveis.
+ */
+function hasVirtiofsEinvalSignature(stderr) {
+  return typeof stderr === "string" && /virtio:virtiofs/.test(stderr) && /\bEINVAL\b/.test(stderr);
+}
+
+/**
+ * Traduz a falha de `docker sandbox create` para o usuário. Só é chamada
+ * depois que o `create` já falhou, então sempre devolve algo. Se o stderr
+ * casar com a assinatura de virtiofs, o diagnóstico completo entra no lugar
+ * do código de saída cru — mesma forma de `describeMcpFailure` em
+ * `knowledge-index.mjs`: função pura, recebe dados, devolve texto.
+ */
+export function describeSandboxCreateFailure({ code, stderr, mounts }) {
+  if (!hasVirtiofsEinvalSignature(stderr)) {
+    return `docker sandbox create falhou (código ${code})`;
+  }
+  const workspaces = (mounts ?? []).map((m) => `  - ${m}`).join("\n");
+  return (
+    "docker sandbox create falhou ao construir o compartilhamento de arquivos do sandbox.\n" +
+    "A limitação é do docker sandbox — virtiofs é a única primitiva de compartilhamento de arquivos que ele tem, " +
+    "um device por workspace montado antes do boot — e não do Ralph. Não há flag, variável de ambiente nem " +
+    "setting do Docker Desktop que contorne isso.\n" +
+    "Workspaces deste sandbox:\n" +
+    `${workspaces}\n` +
+    "Saída: trabalhe num clone do repositório alvo em disco local."
+  );
+}
+
+/**
  * Cria o sandbox se ele ainda não existir. Devolve true se criou agora.
  *
- * Herda o terminal de propósito: na primeira vez o docker baixa a imagem do
- * template (centenas de MB) e todo o progresso vai para o stderr dele. Capturar
- * essa saída faz o comando parecer travado por vários minutos.
+ * Na primeira vez o docker baixa a imagem do template (centenas de MB) e todo
+ * o progresso do download sai pelo stderr dele — capturar sem repassar faria
+ * o comando parecer travado por vários minutos. stdout segue herdado
+ * (`inherit`), sem uso aqui; o stderr é repassado à tela em tempo real
+ * (`process.stderr.write`) e acumulado ao mesmo tempo, para
+ * `describeSandboxCreateFailure` ter o texto para traduzir se o `create`
+ * falhar. Não troque de volta para `stdio: inherit` puro no stderr: isso
+ * apaga o diagnóstico de falha.
  */
 export async function ensureSandbox(name, root, cfg) {
   if (await sandboxExists(name)) return false;
   process.stdout.write(`criando o sandbox '${name}'… na primeira vez isso baixa a imagem do template e pode levar alguns minutos.\n`);
-  const args = ["sandbox", "create", "--name", name, "claude", ...mountsFor(root, cfg)];
-  const code = await new Promise((resolve, reject) => {
-    const child = spawn("docker", args, { stdio: ["ignore", "inherit", "inherit"] });
+  const mounts = mountsFor(root, cfg);
+  const args = ["sandbox", "create", "--name", name, "claude", ...mounts];
+  const { code, stderr } = await new Promise((resolve, reject) => {
+    const child = spawn("docker", args, { stdio: ["ignore", "inherit", "pipe"] });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      stderr += chunk;
+      if (stderr.length > 64 * 1024) stderr = stderr.slice(-32 * 1024);
+    });
     child.on("error", reject);
-    child.on("close", (c) => resolve(c ?? 1));
+    child.on("close", (c) => resolve({ code: c ?? 1, stderr }));
   });
-  if (code !== 0) throw new SandboxError(`docker sandbox create falhou (código ${code})`);
+  if (code !== 0) throw new SandboxError(describeSandboxCreateFailure({ code, stderr, mounts }));
   return true;
 }
 
