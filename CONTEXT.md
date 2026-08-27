@@ -40,6 +40,22 @@ tempo a unidade de trabalho e a unidade de esquecimento — o que precisa
 sobreviver a ela precisa estar em disco antes de ela acabar.
 _Avoid_: rodada, execução, run, volta do loop, sessão
 
+**Prompt da iteração**:
+O texto que dirige uma Iteração inteira, instalado uma vez no repositório alvo
+a partir de um template do Ralph. É a única coisa que o Ralph copia para o alvo
+e depois esquece — nunca re-sincroniza sozinho. O operador não o escreve: um
+prompt que não é cópia fiel de um template instalado está em **Deriva do
+prompt**, não customizado.
+_Avoid_: prompt.md, prompt do loop, promptFile
+
+**Deriva do prompt**:
+O estado em que o **Prompt da iteração** deixou de ser cópia fiel do template
+que o originou, porque o Ralph que o lê avançou e ele ficou parado. Não é
+escolha de ninguém — como o operador não escreve esses textos, toda divergência
+é atraso. É cara porque é silenciosa: o prompt continua rodando e produzindo
+iterações, só que sem as fases que o Ralph atual espera delas.
+_Avoid_: prompt customizado, prompt velho, drift
+
 **Orientação**:
 A fase inicial de uma iteração, em que o agente descobre o que precisa saber
 antes de mexer em código. É onde o índice de conhecimento é consultado, e é a

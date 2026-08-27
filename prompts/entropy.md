@@ -1,3 +1,5 @@
+<!-- ralph:prompt entropy -->
+
 You are ONE iteration of a Ralph entropy loop. Your context is fresh and dies
 when you exit. Fix ONE thing, prove it's still green, commit, stop.
 

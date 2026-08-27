@@ -29,7 +29,7 @@ import {
   resolveEmbeddingEnv,
   withInstallBlock,
 } from "./knowledge-index.mjs";
-import { checkOrientationContract, readOrientationTemplate } from "./orientation.mjs";
+import { ITERATION_PROMPTS, CUSTOM, chooseTemplate, inspectPrompt, installPrompt, templatePath, describeDrift } from "./prompts.mjs";
 import {
   resolve as resolveProvider,
   describeAvailability as describeProviderAvailability,
@@ -103,18 +103,27 @@ function cmdInit(flags) {
   const dir = ralphDir(root);
   mkdirSync(path.join(dir, "logs"), { recursive: true });
 
-  const cfg = isInitialized(root) && !flags.force ? loadConfig(root) : { ...DEFAULTS };
+  // `--force` re-sincroniza os arquivos de template, nunca o config (issue #48):
+  // reescrevê-lo a partir dos DEFAULTS apagaria o `nightProvider.baseUrl` que o
+  // repo declarou — e `--force` é justamente o comando que o aviso de Deriva do
+  // prompt prescreve.
+  const cfg = isInitialized(root) ? loadConfig(root) : { ...DEFAULTS };
   cfg.sandboxName ||= sandboxNameFor(root);
   cfg.feedbackLoops ??= detectFeedbackLoops(root);
   saveConfig(root, cfg);
 
-  const promptSrc = path.join(ralphHome(), "prompts", `${flags.prompt ?? "implement"}.md`);
-  if (!existsSync(promptSrc)) die(`prompt '${flags.prompt}' não existe em ${path.join(ralphHome(), "prompts")}`);
-  const promptDst = path.join(root, cfg.promptFile);
-  if (!existsSync(promptDst) || flags.force) {
-    mkdirSync(path.dirname(promptDst), { recursive: true });
-    copyFileSync(promptSrc, promptDst);
+  // Conjunto declarado, não o que existe em `prompts/`: `orientation.md` está
+  // lá e é prompt de subagente — instalá-lo como Prompt da iteração dá uma
+  // iteração que só sabe ler (issue #48).
+  if (flags.prompt && !ITERATION_PROMPTS.includes(flags.prompt)) {
+    die(`'${flags.prompt}' não é um prompt de iteração — rode 'ralph init --prompt <${ITERATION_PROMPTS.join("|")}>'`);
   }
+  const promptDst = path.join(root, cfg.promptFile);
+  const target = chooseTemplate(flags.prompt, existsSync(promptDst) ? inspectPrompt(root, cfg) : null);
+  if (target.install && !existsSync(templatePath(target.name))) {
+    die(`o template '${target.name}' não está em ${path.join(ralphHome(), "prompts")} — esta instalação do Ralph está incompleta, refaça o clone`);
+  }
+  if (target.install && (!existsSync(promptDst) || flags.force)) installPrompt(root, cfg, target.name);
 
   const progress = path.join(root, cfg.progressFile);
   if (!existsSync(progress)) {
@@ -141,7 +150,9 @@ function cmdInit(flags) {
   if (!existsSync(ignore)) writeFileSync(ignore, "logs/\n", "utf8");
 
   process.stdout.write(`${paint(C.green, "✓")} .ralph/ criado em ${root}\n\n`);
-  process.stdout.write(`  prompt        ${cfg.promptFile}\n`);
+  process.stdout.write(
+    `  prompt        ${cfg.promptFile}${target.install ? "" : paint(C.dim, ` (${CUSTOM} — preservado; --prompt <nome> sobrescreve)`)}\n`
+  );
   process.stdout.write(`  progresso     ${cfg.progressFile}\n`);
   process.stdout.write(
     `  setup         ${cfg.setupScript ?? ".ralph/setup.sh"}${setupChanged ? paint(C.dim, " (instalação do índice de conhecimento adicionada)") : ""}\n`
@@ -195,19 +206,14 @@ async function cmdDoctor(flags) {
   const detectedIndexes = detectKnowledgeIndex(root, cfg);
   for (const line of describeKnowledgeIndex(detectedIndexes)) ok(line);
 
-  // Só cobra o contrato de quem de fato delega (checkOrientationContract
-  // devolve applicable: false pro resto) — um prompt.md antigo ou custom que
-  // orienta inline não é bug (issue #17).
-  const promptPath = path.join(root, cfg.promptFile);
-  if (existsSync(promptPath)) {
-    const contract = checkOrientationContract(readFileSync(promptPath, "utf8"), readOrientationTemplate());
-    if (contract.applicable) {
-      contract.ok
-        ? ok("contrato do Resumo de orientação em dia")
-        : warn(
-            `contrato do Resumo de orientação divergiu (${cfg.promptFile} está desatualizado em relação ao template instalado) — rode 'ralph init --force' para re-sincronizar. ${contract.issues.join("; ")}`
-          );
-    }
+  // Fidelidade ao template é a regra (ADR-0009): o operador não escreve estes
+  // textos, então divergir do template é atraso, não escolha. Substitui a
+  // checagem de contrato da issue #17, que calava justamente no prompt mais
+  // velho — a deriva grande apagava a evidência de que ele um dia delegou.
+  const prompt = inspectPrompt(root, cfg);
+  if (prompt) {
+    const { level, message } = describeDrift(prompt, cfg.promptFile);
+    level === "ok" ? ok(message) : warn(message);
   }
 
   if (!(await dockerAvailable())) return bad("docker sandbox indisponível — Docker Desktop está rodando?");
@@ -465,7 +471,7 @@ ${paint(C.bold, "Comandos")}
 
 ${paint(C.bold, "Opções comuns")}
   --model <nome>     sobrepõe o modelo da iteração (padrão: ${DEFAULTS.model}; com --night, a tag do nightProvider)
-  --prompt <arquivo> usa outro prompt de loop
+  --prompt <arquivo> usa outro Prompt da iteração
   --night            roda contra o Provedor local (nightProvider no config) em vez da API paga
   -- <args>          repassa argumentos crus ao claude
 

@@ -23,6 +23,7 @@ import {
   resolveEmbeddingEnv,
 } from "./knowledge-index.mjs";
 import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
+import { ensurePromptFresh, describeDrift } from "./prompts.mjs";
 import {
   resolve as resolveProvider,
   renderEnv as renderProviderEnv,
@@ -330,6 +331,17 @@ export async function prepare(root, cfg, { allowBranch = false } = {}) {
       `você está em '${branch}'. Ralph commita a cada iteração — crie uma branch ` +
         `(git switch -c ralph/<assunto>) ou passe --allow-branch para assumir o risco.`
     );
+  }
+
+  // Deriva do prompt é atraso, não escolha (ADR-0009): a iteração a desfaz
+  // antes de rodar. Aqui, e não só no `doctor`, porque `once`/`afk` nunca o
+  // chamam — foi por essa fresta que o ADR-0004 ficou comprado e não consumido
+  // por 39 iterações (issue #48).
+  const prompt = ensurePromptFresh(root, cfg);
+  if (prompt?.resynced) {
+    process.stdout.write(paint(C.yellow, `  ${cfg.promptFile} reinstalado a partir do template '${prompt.template}'\n`));
+  } else if (prompt?.state === "sem-procedencia") {
+    process.stdout.write(paint(C.yellow, `  ! ${describeDrift(prompt, cfg.promptFile).message}\n`));
   }
 
   const created = await ensureSandbox(cfg.sandboxName, root, cfg);

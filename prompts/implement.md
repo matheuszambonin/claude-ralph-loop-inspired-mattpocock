@@ -1,4 +1,5 @@
 /mattpocock-skills:implement
+<!-- ralph:prompt implement -->
 
 You are ONE iteration of a Ralph loop. Your context window is fresh and it dies
 when you exit. Anything the next iteration needs to know must be on disk before

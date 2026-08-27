@@ -310,10 +310,10 @@ code-review-graph indisponível" enquanto as outras nove tools do índice
 continuam funcionando — o mesmo aviso aparece se você rodar `doctor` no meio
 de uma noite ocupada.
 
-## Prompts de loop
+## Prompt da iteração
 
 `ralph init --prompt <nome>` copia um dos templates de `prompts/` para
-`.ralph/prompt.md`, onde você pode editá-lo à vontade:
+`.ralph/prompt.md`:
 
 - **`implement`** (padrão) — consome o backlog de tickets via
   `/mattpocock-skills:implement`
@@ -325,6 +325,30 @@ de uma noite ocupada.
 Os placeholders `{{PROGRESS_FILE}}`, `{{COMPLETION_PROMISE}}`,
 `{{BLOCKED_PROMISE}}` e `{{FEEDBACK_LOOPS}}` são substituídos a cada iteração a
 partir do config.
+
+### O prompt instalado é cópia, não rascunho
+
+Cada template carrega no topo a linha `<!-- ralph:prompt <nome> -->`, e a cópia
+a herda. É por ela que o Ralph sabe de onde o seu `.ralph/prompt.md` veio, e a
+comparação com o template é byte a byte — se o texto divergiu, é porque o Ralph
+avançou e o arquivo ficou parado, não porque alguém escolheu isso. `ralph
+doctor` diz de qual template ele saiu, e `ralph once`/`ralph afk`
+re-sincronizam antes de rodar, avisando o que reinstalaram. `ralph init
+--force` sem `--prompt` reinstala o template que o arquivo declara, nunca o
+padrão: um alvo em loop de entropia não vira um de implement por causa de uma
+re-sincronização.
+
+Duas saídas dessa regra:
+
+- **É seu de propósito** — troque o nome por `custom`
+  (`<!-- ralph:prompt custom -->`). O Ralph passa a calar sobre esse arquivo e
+  nunca mais o toca; nem `ralph init --force`, que só o sobrescreve se você
+  nomear um template (`--prompt <nome>`).
+- **Não tem a linha nenhuma** — é o caso de todo `.ralph/prompt.md` criado
+  antes desta versão. O `doctor` lista os templates e para por aí: adivinhar a
+  origem por semelhança trocaria um loop de entropia por um de implement em
+  silêncio, desfecho pior que a deriva. Rode
+  `ralph init --force --prompt <nome>` para escolher, ou marque como `custom`.
 
 ## Comandos
 

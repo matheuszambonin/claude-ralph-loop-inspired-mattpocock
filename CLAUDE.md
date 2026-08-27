@@ -31,8 +31,11 @@ node --test tests/*.test.mjs
 ```
 
 Isso pega erro de sintaxe e o que `tests/` cobre — as costuras puras:
-`knowledge-index`, `credentials`, `orientation`, a montagem do prompt em
-`runner` e a agregação de custo em `stream`. Mudança em `sandbox/bootstrap.sh` ou em
+`knowledge-index`, `credentials`, `orientation`, `prompts` (procedência e
+Deriva do prompt), a montagem do prompt em `runner` e a agregação de custo em
+`stream`. `tests/cli.test.mjs` é a exceção: roda o CLI de verdade num
+diretório temporário, porque o que o `ralph init` preserva ou sobrescreve não
+tem costura pura onde ser provado. Mudança em `sandbox/bootstrap.sh` ou em
 `src/sandbox.mjs` só está provada quando `ralph bootstrap --force` roda limpo
 num sandbox de verdade e `ralph doctor` fecha verde num repo alvo — o
 comportamento que importa está do lado de dentro do container.
