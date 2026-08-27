@@ -16,14 +16,14 @@ function writeConfig(root, contents) {
   writeFileSync(path.join(root, ".ralph", "config.json"), JSON.stringify(contents));
 }
 
-test("loadConfig: sem .ralph/config.json, nightProvider sai completo, com os cinco campos", (t) => {
+test("loadConfig: sem .ralph/config.json, nightProvider sai completo, com os seis campos", (t) => {
   const root = tmpRepo(t);
   const cfg = loadConfig(root);
   assert.deepEqual(cfg.nightProvider, DEFAULTS.nightProvider);
-  assert.equal(Object.keys(cfg.nightProvider).length, 5);
+  assert.equal(Object.keys(cfg.nightProvider).length, 6);
 });
 
-test("loadConfig: config.json que só declara nightProvider.model herda baseUrl/keepAlive/minContext do padrão", (t) => {
+test("loadConfig: config.json que só declara nightProvider.model herda baseUrl/keepAlive/minContext/probeTimeoutSeconds do padrão", (t) => {
   const root = tmpRepo(t);
   writeConfig(root, { nightProvider: { model: "qwen2.5-coder:14b" } });
   const cfg = loadConfig(root);
@@ -31,6 +31,45 @@ test("loadConfig: config.json que só declara nightProvider.model herda baseUrl/
   assert.equal(cfg.nightProvider.baseUrl, DEFAULTS.nightProvider.baseUrl);
   assert.equal(cfg.nightProvider.keepAlive, DEFAULTS.nightProvider.keepAlive);
   assert.equal(cfg.nightProvider.minContext, DEFAULTS.nightProvider.minContext);
+  assert.equal(cfg.nightProvider.probeTimeoutSeconds, DEFAULTS.nightProvider.probeTimeoutSeconds);
+});
+
+// O teto do canário é do operador (issue #57): default generoso para quem não
+// declara nada, e o valor declarado vence sem perder o resto do bloco.
+test("loadConfig: probeTimeoutSeconds tem default generoso — night mode gasta tempo ocioso, não token pago", (t) => {
+  const root = tmpRepo(t);
+  assert.equal(loadConfig(root).nightProvider.probeTimeoutSeconds, 900);
+});
+
+test("loadConfig: probeTimeoutSeconds declarado vence o default e não derruba os outros campos", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { probeTimeoutSeconds: 1800 } });
+  const cfg = loadConfig(root);
+  assert.equal(cfg.nightProvider.probeTimeoutSeconds, 1800);
+  assert.equal(cfg.nightProvider.model, DEFAULTS.nightProvider.model);
+  assert.equal(cfg.nightProvider.minContext, DEFAULTS.nightProvider.minContext);
+});
+
+// O vizinho de bloco é `keepAlive: "8h"`, então "900s" é o erro provável. Sem
+// esta guarda ele vira RangeException dentro da sonda, que as três provas
+// engolem — e o operador recebe "troque nightProvider.model" por um typo no
+// teto (issue #57).
+test("loadConfig: probeTimeoutSeconds com unidade colada é erro de config, não misdiagnóstico da sonda", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { probeTimeoutSeconds: "900s" } });
+  assert.throws(() => loadConfig(root), /probeTimeoutSeconds/);
+});
+
+test("loadConfig: o erro do teto torto diz como escrever o número certo", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { probeTimeoutSeconds: -1 } });
+  assert.throws(() => loadConfig(root), /sem unidade|apague o campo/);
+});
+
+test("loadConfig: teto acima do que o AbortSignal aceita reprova antes de chegar na sonda", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { probeTimeoutSeconds: 1e12 } });
+  assert.throws(() => loadConfig(root), /probeTimeoutSeconds/);
 });
 
 test("loadConfig: config.json que não menciona nightProvider continua válido, sem migração", (t) => {

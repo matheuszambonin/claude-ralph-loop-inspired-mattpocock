@@ -247,7 +247,10 @@ no mesmo Provedor — `ANTHROPIC_BASE_URL` é variável de processo, não de fas
     "keepAlive": "8h",
     // tamanho do prompt que o canário de contexto do doctor precisa provar
     // sem truncar; baixe este valor para aceitar explicitamente menos contexto
-    "minContext": 131072
+    "minContext": 131072,
+    // teto de cada prova de /v1/messages do doctor; suba se a máquina é lenta
+    // e a espera é aceitável — night mode gasta tempo ocioso, não token pago
+    "probeTimeoutSeconds": 900
   }
 }
 ```

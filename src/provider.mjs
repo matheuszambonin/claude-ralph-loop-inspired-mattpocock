@@ -1,3 +1,5 @@
+import http from "node:http";
+import https from "node:https";
 import { translateLoopback } from "./paths.mjs";
 import { execCapture } from "./sandbox.mjs";
 
@@ -28,6 +30,7 @@ export function resolve(cfg, { night = false } = {}) {
     orientationModel: provider.orientationModel ?? provider.model,
     keepAlive: provider.keepAlive,
     minContext: provider.minContext,
+    probeTimeoutSeconds: provider.probeTimeoutSeconds,
   };
 }
 
@@ -95,27 +98,96 @@ function canaryPrompt(minContext) {
 }
 
 /**
- * Teto de cada prova de `/v1/messages`, escolhido aqui (issue #56). O valor
- * é o mesmo que valia antes, mas ele deixou de ser herdado: até esta issue os
- * 300s vinham do `headersTimeout` do undici por baixo do `fetch` global —
- * nenhuma linha do projeto o escolheu, e uma mudança de default no Node
- * mudaria o comportamento do produto sem ninguém tocar no repositório.
+ * Cliente HTTP da biblioteca padrão, com a forma de retorno do `fetch` —
+ * `{ ok, status, json() }` — para que a costura injetável de `probe()` não
+ * mude de assinatura.
+ *
+ * Ele existe porque o teto do canário é do operador desde a issue #57, e o
+ * `fetch` global não sabe honrar um teto acima de 300s: os 300s são o
+ * `headersTimeout` do undici, que a API pública do Node não expõe — esticá-lo
+ * exigiria um `Agent` do undici, que não é módulo built-in, e um
+ * `AbortController` só encurta um teto, nunca o estende. Com um teto declarado
+ * acima disso o `fetch` reprovaria o Provedor por um número que ninguém
+ * escolheu, e a configuração do operador seria mentira.
+ *
+ * O teto entra por `opts.signal` e vale até o **corpo inteiro** ter chegado —
+ * a promessa só resolve no `end` da resposta, e o abort continua armado até
+ * lá. É o corpo que traz a resposta do canário: um teto que cobrisse só os
+ * cabeçalhos aprovaria um Provedor que responde e nunca termina.
+ *
+ * Rejeita com o `reason` do próprio sinal, que é o que dá a `isTimeout()` o
+ * `TimeoutError` do `AbortSignal.timeout` e o `AbortError` dos abortos
+ * genéricos, exatamente como o `fetch` fazia.
  */
-export const PROBE_TIMEOUT_MS = 300_000;
+export function httpJson(url, { method = "GET", headers = {}, body, signal } = {}) {
+  const target = new URL(url);
+  const transport = target.protocol === "https:" ? https : http;
+  // Em bytes, não em caracteres: o prompt do canário é português acentuado, e
+  // um Content-Length curto faria o servidor ler menos corpo do que foi
+  // enviado. Declará-lo evita o `transfer-encoding: chunked` que o Node usaria
+  // sozinho, que o proxy MITM do sandbox não precisa entender.
+  const payload = body === undefined ? null : Buffer.from(body);
+  const sent = payload ? { ...headers, "content-length": payload.length } : headers;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const fail = (err) => {
+      if (settled) return;
+      cleanup();
+      reject(err);
+    };
+    function onAbort() {
+      req.destroy();
+      fail(signal.reason);
+    }
+    const req = transport.request(target, { method, headers: sent }, (res) => {
+      res.setEncoding("utf8");
+      let text = "";
+      res.on("data", (chunk) => (text += chunk));
+      res.on("error", fail);
+      res.on("end", () => {
+        if (settled) return;
+        cleanup();
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          json: async () => JSON.parse(text),
+        });
+      });
+    });
+    req.on("error", fail);
+    if (signal) {
+      if (signal.aborted) return onAbort();
+      signal.addEventListener("abort", onAbort);
+    }
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
 
-async function postMessages(fetchImpl, baseUrl, body) {
-  const res = await fetchImpl(joinUrl(baseUrl, "/v1/messages"), {
+/**
+ * Teto da prova de alcance a partir do host. Curto porque ela mede rota, não
+ * inferência — o mesmo raciocínio (e o mesmo número) do `--max-time 5` que a
+ * perna do sandbox usa contra o mesmo `/api/tags`.
+ */
+const REACH_TIMEOUT_MS = 5_000;
+
+async function postMessages(fetchImpl, provider, body) {
+  const res = await fetchImpl(joinUrl(provider.baseUrl, "/v1/messages"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(Math.round(provider.probeTimeoutSeconds * 1000)),
   });
   if (!res.ok) throw new Error(`status ${res.status}`);
   return res.json();
 }
 
 /**
- * Distingue "o teto disparou" de qualquer outra falha do pedido. `fetch`
+ * Distingue "o teto disparou" de qualquer outra falha do pedido. O cliente
  * rejeita com `TimeoutError` quando o `AbortSignal.timeout` acima estoura, e
  * com `AbortError` nos abortos genéricos; um 500 do Provedor chega aqui como
  * `Error` comum e não é lentidão.
@@ -127,14 +199,16 @@ function isTimeout(err) {
 
 /**
  * Impura, mas só de rede (issue #32): faz as três provas do Provedor local a
- * partir do host, com `fetch` nativo — zero dependência nova. Devolve
+ * partir do host, com o cliente `httpJson` acima — biblioteca padrão, zero
+ * dependência nova. Devolve
  * `{ reachable, toolUse, contextOk, contextTimedOut }`.
  *
  * Inalcançável (erro de rede ou `/api/tags` não responde) encurta as outras
  * duas provas para reprovadas: sem alcance não há como testar o resto, e uma
  * exceção de rede nunca escapa daqui — quem chama sempre recebe um objeto.
  *
- * A prova de contexto que não conclui em `PROBE_TIMEOUT_MS` volta como
+ * A prova de contexto que não conclui no teto do Provedor
+ * (`probeTimeoutSeconds`, issue #57) volta como
  * `contextTimedOut` (issue #56), separada do truncamento: `contextOk` é falso
  * nos dois casos — o significado de hoje, para quem lê só ele —, mas só um
  * deles é prova de que o Provedor corta o prompt. `reachable` continua
@@ -151,10 +225,12 @@ function isTimeout(err) {
  * reprova, em vez de passar numa prova de tamanho fixo sem relação com o que
  * o operador configurou.
  */
-export async function probe(provider, { fetchImpl = fetch } = {}) {
+export async function probe(provider, { fetchImpl = httpJson } = {}) {
   const unreachable = { reachable: false, toolUse: false, contextOk: false, contextTimedOut: false };
   try {
-    const tags = await fetchImpl(joinUrl(provider.baseUrl, "/api/tags"));
+    const tags = await fetchImpl(joinUrl(provider.baseUrl, "/api/tags"), {
+      signal: AbortSignal.timeout(REACH_TIMEOUT_MS),
+    });
     if (!tags.ok) return unreachable;
   } catch {
     return unreachable;
@@ -162,7 +238,7 @@ export async function probe(provider, { fetchImpl = fetch } = {}) {
 
   let toolUse = false;
   try {
-    const toolRes = await postMessages(fetchImpl, provider.baseUrl, {
+    const toolRes = await postMessages(fetchImpl, provider, {
       model: provider.model,
       max_tokens: 64,
       tools: [TOOL_USE_PROBE_TOOL],
@@ -176,7 +252,7 @@ export async function probe(provider, { fetchImpl = fetch } = {}) {
   let contextOk = false;
   let contextTimedOut = false;
   try {
-    const canaryRes = await postMessages(fetchImpl, provider.baseUrl, {
+    const canaryRes = await postMessages(fetchImpl, provider, {
       model: provider.model,
       max_tokens: 64,
       messages: [{ role: "user", content: canaryPrompt(provider.minContext) }],
@@ -327,7 +403,7 @@ export function describeAvailability(provider) {
  * um bloqueio de CIDR. Daí a linha entregar o comando inteiro com o nome do
  * sandbox já interpolado, colável como está (padrão da issue #50).
  */
-export function describeDegradation(probeResult, minContext, baseUrl, sandboxName) {
+export function describeDegradation(probeResult, minContext, baseUrl, sandboxName, probeTimeoutSeconds) {
   if (!probeResult.reachable) {
     if (probeResult.reachableFromHost && !probeResult.reachableFromSandbox) {
       return (
@@ -347,9 +423,11 @@ export function describeDegradation(probeResult, minContext, baseUrl, sandboxNam
   }
   if (probeResult.contextTimedOut) {
     return (
-      `Prova de contexto do Provedor local não concluiu em ${Math.round(PROBE_TIMEOUT_MS / 1000)}s. ` +
+      `Prova de contexto do Provedor local não concluiu em ${probeTimeoutSeconds}s. ` +
       "O Provedor respondeu — ele pode estar correto, só lento — e não se sabe se ele trunca o prompt. " +
-      "Os consertos são baixar o contexto declarado, em nightProvider.minContext no .ralph/config.json e " +
+      "Se essa espera é aceitável, suba nightProvider.probeTimeoutSeconds no .ralph/config.json — o night " +
+      "mode existe para gastar tempo de máquina ociosa, não para ser rápido. Os consertos que atacam a " +
+      "lentidão em si são baixar o contexto declarado, em nightProvider.minContext no .ralph/config.json e " +
       "em OLLAMA_CONTEXT_LENGTH no host, que precisam bater porque o Ralph nunca envia num_ctx e quem " +
       "dimensiona o KV cache é a variável do host; ou trocar nightProvider.model por um modelo que caiba " +
       "na GPU — `ollama ps` mostra a divisão CPU/GPU por trás da lentidão."

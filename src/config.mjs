@@ -65,6 +65,12 @@ export const DEFAULTS = {
     // prompt em silêncio e responder com confiança sobre o pedaço que
     // sobrou; baixar este valor é aceitar explicitamente menos contexto.
     minContext: 131072,
+    // teto de cada prova de `/v1/messages` do doctor. Generoso de propósito
+    // (issue #57): night mode é gastar tempo de máquina ociosa em vez de
+    // token pago, e um teto apertado reprovaria um Provedor íntegro pela
+    // única dimensão que o conceito declara não medir — velocidade. Quem tem
+    // máquina lenta e paciência declara sua paciência aqui.
+    probeTimeoutSeconds: 900,
   },
 };
 
@@ -92,8 +98,25 @@ export function loadConfig(root) {
   // `model`. Caso especial enquanto for o único (issue #40); generalizar
   // antes de existir um segundo campo assim é preparo para ninguém.
   cfg.nightProvider = { ...DEFAULTS.nightProvider, ...user.nightProvider };
+  assertProbeTimeout(cfg.nightProvider.probeTimeoutSeconds);
   cfg.sandboxName ||= sandboxNameFor(root);
   return cfg;
+}
+
+// `AbortSignal.timeout` só aceita milissegundos num inteiro sem sinal de 32
+// bits — acima disso ele lança de dentro da sonda, e as três provas engolem
+// exceção por projeto: o operador veria "troque nightProvider.model" por um
+// número torto no teto. O vizinho de bloco é `keepAlive: "8h"`, então escrever
+// `"15m"` aqui é o erro provável, não o exótico.
+const MAX_PROBE_TIMEOUT_SECONDS = 4_294_967;
+
+function assertProbeTimeout(seconds) {
+  if (Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_PROBE_TIMEOUT_SECONDS) return;
+  throw new Error(
+    `.ralph/config.json: nightProvider.probeTimeoutSeconds é ${JSON.stringify(seconds)}, e precisa ser ` +
+      `um número de segundos entre 0 e ${MAX_PROBE_TIMEOUT_SECONDS}. Escreva o número puro, sem unidade ` +
+      `(o padrão é ${DEFAULTS.nightProvider.probeTimeoutSeconds}), ou apague o campo para herdá-lo.`,
+  );
 }
 
 export function saveConfig(root, cfg) {

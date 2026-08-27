@@ -10,9 +10,10 @@ import {
   preload,
   describeAvailability,
   describeDegradation,
-  PROBE_TIMEOUT_MS,
+  httpJson,
 } from "../src/provider.mjs";
 import { DEFAULTS } from "../src/config.mjs";
+import { createServer } from "node:http";
 
 // `resolve` não carrega padrão próprio desde a issue #40 — quem monta o cfg
 // de teste tem que refletir o que `loadConfig` de fato entrega (DEFAULTS com
@@ -86,6 +87,18 @@ test("resolve: com night, minContext sai junto dos outros campos do Provedor", (
   assert.equal(resolve(cfg, { night: true }).minContext, 65536);
 });
 
+// O teto do canário é do operador (issue #57): mesmo caminho de `minContext`,
+// do config ao Provedor resolvido.
+test("resolve: com night, o teto do canário sai junto dos outros campos do Provedor", () => {
+  const cfg = baseCfg({ nightProvider: { probeTimeoutSeconds: 1800 } });
+  assert.equal(resolve(cfg, { night: true }).probeTimeoutSeconds, 1800);
+});
+
+test("resolve: com night e probeTimeoutSeconds ausente do config, o padrão generoso chega sozinho", () => {
+  const provider = resolve(baseCfg({ nightProvider: { model: "qwen3-coder:30b" } }), { night: true });
+  assert.equal(provider.probeTimeoutSeconds, DEFAULTS.nightProvider.probeTimeoutSeconds);
+});
+
 test("renderEnv: Provedor anthropic devolve objeto vazio", () => {
   assert.deepEqual(renderEnv(resolve(baseCfg(), { night: false })), {});
 });
@@ -111,6 +124,7 @@ function fakeProvider(overrides = {}) {
     model: "test-model",
     orientationModel: "test-model",
     minContext: DEFAULTS.nightProvider.minContext,
+    probeTimeoutSeconds: DEFAULTS.nightProvider.probeTimeoutSeconds,
     ...overrides,
   };
 }
@@ -290,7 +304,6 @@ test("probe: o teto do canário é o do projeto, não o herdado do fetch", async
   };
   await probe(fakeProvider(), { fetchImpl });
   assert.ok(signal instanceof AbortSignal, "o pedido do canário leva o teto da sonda junto");
-  assert.equal(typeof PROBE_TIMEOUT_MS, "number");
 });
 
 // --- alcance provado de dentro do sandbox (issue #46) ---
@@ -462,7 +475,7 @@ test("describeDegradation: truncamento cita o par que precisa bater com OLLAMA_C
 
 test("describeDegradation: timeout diz que a prova não concluiu e que o Provedor pode estar íntegro", () => {
   const probeResult = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: true };
-  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
   assert.match(msg, /não concluiu/);
   assert.match(msg, /lento/);
   assert.doesNotMatch(msg, /trunca o prompt em silêncio/);
@@ -470,7 +483,7 @@ test("describeDegradation: timeout diz que a prova não concluiu e que o Provedo
 
 test("describeDegradation: timeout nomeia o par minContext + OLLAMA_CONTEXT_LENGTH e cita ollama ps", () => {
   const probeResult = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: true };
-  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
   assert.match(msg, /minContext/);
   assert.match(msg, /OLLAMA_CONTEXT_LENGTH/);
   assert.match(msg, /ollama ps/);
@@ -481,7 +494,7 @@ test("describeDegradation: timeout não manda subir OLLAMA_CONTEXT_LENGTH", () =
   // prescrição do truncamento (`OLLAMA_CONTEXT_LENGTH=<minContext>`) não pode
   // vazar para cá.
   const probeResult = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: true };
-  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
   assert.doesNotMatch(msg, /OLLAMA_CONTEXT_LENGTH=65536/);
   assert.match(msg, /baixar o contexto declarado/);
 });
@@ -494,7 +507,7 @@ test("describeDegradation: Provedor inalcançável recebe a prosa de alcance, nu
     contextOk: false,
     contextTimedOut: true,
   };
-  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc");
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
   assert.match(msg, /OLLAMA_HOST=0\.0\.0\.0/);
   assert.doesNotMatch(msg, /não concluiu/);
 });
@@ -535,4 +548,101 @@ test("describeDegradation: host reprova não prescreve a política de rede — n
   const probeResult = { reachable: false, reachableFromHost: false, reachableFromSandbox: false };
   const msg = describeDegradation(probeResult, undefined, "http://host.docker.internal:11434", "ralph-alvo-1abc");
   assert.doesNotMatch(msg, /allow-cidr/);
+});
+
+
+// --- o teto é do operador, e vale acima de 300s (issue #57) ---
+
+test("describeDegradation: timeout diz contra que número a prova perdeu e onde mudá-lo", () => {
+  const probeResult = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /900s/);
+  assert.match(msg, /nightProvider\.probeTimeoutSeconds/);
+});
+
+test("describeDegradation: o número da prosa é o teto vigente, não uma constante fixa", () => {
+  const probeResult = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 1800);
+  assert.match(msg, /1800s/);
+  assert.doesNotMatch(msg, /900s/);
+});
+
+// --- o cliente da biblioteca padrão, que aceita teto arbitrário (issue #57) ---
+//
+// O `fetch` global morre aos 300s pelo `headersTimeout` do undici, que a API
+// pública do Node não expõe: um teto declarado acima disso seria mentira. Os
+// testes abaixo medem em milissegundos o que a produção mede em minutos — a
+// propriedade é a mesma, o teto ser o que a sonda pediu e cobrir o corpo.
+
+/** Servidor que atrasa os cabeçalhos por `headDelay` e o resto do corpo por
+ *  `bodyDelay`, para separar "demorou a responder" de "demorou a terminar". */
+function slowServer(t, { headDelay = 0, bodyDelay = 0, body = '{"ok":true}' } = {}) {
+  const server = createServer((req, res) => {
+    setTimeout(() => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write(body.slice(0, 1));
+      setTimeout(() => res.end(body.slice(1)), bodyDelay);
+    }, headDelay);
+  });
+  t.after(() => server.close());
+  return new Promise((done) => {
+    server.listen(0, "127.0.0.1", () => done(`http://127.0.0.1:${server.address().port}`));
+  });
+}
+
+test("httpJson: devolve a forma do fetch — ok, status e json() do corpo inteiro", async (t) => {
+  const url = await slowServer(t, { body: JSON.stringify({ stop_reason: "end_turn" }) });
+  const res = await httpJson(url);
+  assert.equal(res.ok, true);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { stop_reason: "end_turn" });
+});
+
+test("httpJson: status não-2xx volta com ok falso, sem lançar", async (t) => {
+  const server = createServer((req, res) => {
+    res.writeHead(500).end("{}");
+  });
+  t.after(() => server.close());
+  const url = await new Promise((done) =>
+    server.listen(0, "127.0.0.1", () => done(`http://127.0.0.1:${server.address().port}`)),
+  );
+  const res = await httpJson(url);
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 500);
+});
+
+test("httpJson: o teto cobre o corpo, não só os cabeçalhos — é o corpo que traz a resposta do canário", async (t) => {
+  const url = await slowServer(t, { bodyDelay: 400 });
+  await assert.rejects(
+    () => httpJson(url, { signal: AbortSignal.timeout(80) }),
+    (err) => err.name === "TimeoutError",
+  );
+});
+
+test("httpJson: resposta que chega dentro do teto não é abortada", async (t) => {
+  const url = await slowServer(t, { headDelay: 30, bodyDelay: 30 });
+  const res = await httpJson(url, { signal: AbortSignal.timeout(5000) });
+  assert.equal(res.ok, true);
+});
+
+test("probe: o canário morre no teto que o Provedor declarou, não num teto herdado", async (t) => {
+  const url = await slowServer(t, { bodyDelay: 400 });
+  // Fração de segundo aqui é o mesmo campo que em produção vale 900: o que se
+  // prova é que o número do Provedor é o que manda.
+  const provider = fakeProvider({ baseUrl: url, minContext: 100, probeTimeoutSeconds: 0.08 });
+  const result = await probe(provider);
+  assert.equal(result.reachable, true);
+  assert.equal(result.contextTimedOut, true);
+  assert.equal(result.contextOk, false);
+});
+
+test("probe: com teto folgado, o mesmo Provedor lento conclui a prova", async (t) => {
+  const url = await slowServer(t, {
+    bodyDelay: 200,
+    body: JSON.stringify({ stop_reason: "end_turn", content: [{ type: "text", text: "SENHA_INICIAL" }] }),
+  });
+  const provider = fakeProvider({ baseUrl: url, minContext: 100, probeTimeoutSeconds: 10 });
+  const result = await probe(provider);
+  assert.equal(result.contextTimedOut, false);
+  assert.equal(result.contextOk, true);
 });
