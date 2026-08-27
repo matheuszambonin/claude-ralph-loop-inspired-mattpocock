@@ -338,13 +338,22 @@ export async function probeBoth(sandboxName, provider, opts = {}) {
  * Nunca lança: falha ao aquecer não é falha alta (diferente das três provas
  * de `probe`) — a primeira iteração carrega o modelo sozinha, só mais devagar.
  * Quem chama decide como avisar.
+ *
+ * O teto é o mesmo `probeTimeoutSeconds` das provas, pelo mesmo cliente
+ * `httpJson` (issue #60). Carregar dezenas de GB pode passar dos 300s que o
+ * `fetch` global impõe, e na máquina que declarou 900s o aviso saía sobre um
+ * aquecimento que ia bem, segundos antes de a iteração 1 rodar contra um
+ * modelo já residente. Ter teto, e não deixá-lo aberto, é o outro lado: um
+ * `preload` sem limite penduraria a iteração 1 e travaria o AFK a noite
+ * inteira, que é pior que um aviso errado.
  */
-export async function preload(provider, { fetchImpl = fetch } = {}) {
+export async function preload(provider, { fetchImpl = httpJson } = {}) {
   try {
     const res = await fetchImpl(joinUrl(provider.baseUrl, "/api/generate"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: provider.model, keep_alive: provider.keepAlive }),
+      signal: AbortSignal.timeout(Math.round(provider.probeTimeoutSeconds * 1000)),
     });
     return res.ok;
   } catch {

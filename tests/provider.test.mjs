@@ -433,6 +433,25 @@ test("preload: fetchImpl que lança (porta fechada) devolve false sem propagar e
   assert.equal(ok, false);
 });
 
+// O aquecimento sai do teto herdado (issue #60). Ele ficou no `fetch` global
+// quando a issue #57 trocou o cliente das três provas, e um modelo de 30B pode
+// passar dos 300s do undici para carregar — na máquina que declarou 900s, o
+// aviso "aquecimento falhou" mentia sobre um aquecimento que ia bem. O teto
+// agora é o mesmo número que o operador declarou para as provas, e o cliente é
+// o `httpJson`, que já não conhece os 300s. Aqui a fração de segundo faz o
+// papel dos minutos da produção: o que se prova é de onde vem o número.
+test("preload: aquecimento lento dentro do teto declarado conclui, sem virar aviso de falha", async (t) => {
+  const url = await slowServer(t, { bodyDelay: 200 });
+  const ok = await preload(fakeProvider({ baseUrl: url, probeTimeoutSeconds: 10 }));
+  assert.equal(ok, true);
+});
+
+test("preload: aquecimento que estoura o teto declarado devolve false sem lançar", async (t) => {
+  const url = await slowServer(t, { bodyDelay: 400 });
+  const ok = await preload(fakeProvider({ baseUrl: url, probeTimeoutSeconds: 0.08 }));
+  assert.equal(ok, false);
+});
+
 test("describeAvailability: nomeia o Provedor local e o modelo, não o Ollama", () => {
   const cfg = baseCfg({ nightProvider: { model: "qwen3-coder:30b" } });
   const msg = describeAvailability(resolve(cfg, { night: true }));
