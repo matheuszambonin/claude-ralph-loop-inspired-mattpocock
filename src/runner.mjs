@@ -6,6 +6,7 @@ import {
   ensureSandbox,
   execCapture,
   runClaudeStreaming,
+  killClaudeInSandbox,
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
@@ -258,6 +259,32 @@ function warnIfPreloadFailed(warmed) {
   );
 }
 
+/**
+ * Pura: o que o operador lê quando o teto da issue #67 estourou. É a única
+ * falha de iteração sem linha de erro no log — o processo morreu no meio de
+ * uma frase, sem `result` e sem stderr útil — então a mensagem carrega
+ * sozinha o log até onde chegou e o campo que afrouxa o teto.
+ */
+export function describeIterationTimeout({ iteration, seconds, logPath }) {
+  return (
+    `iteração ${iteration} estourou o teto de ${seconds}s e o claude foi morto.\n` +
+    `  Log até onde chegou: ${logPath}\n` +
+    `  Se a máquina é lenta e a espera era legítima, suba iterationTimeoutSeconds ` +
+    `em .ralph/config.json; se não, o fim do log mostra onde a iteração travou.`
+  );
+}
+
+/**
+ * Escreve o estouro na tela. Mora aqui, e não em cada chamador, porque o `afk`
+ * e o `once` anunciam a mesma coisa — e o `once` só passou a ter o que anunciar
+ * quando o teto passou a existir.
+ */
+export function reportIterationTimeout(root, cfg, result, iteration) {
+  const logPath = path.relative(root, result.logPath);
+  const seconds = cfg.iterationTimeoutSeconds;
+  process.stdout.write(paint(C.red, `\n✗ ${describeIterationTimeout({ iteration, seconds, logPath })}\n`));
+}
+
 function logFile(root, iteration) {
   const dir = path.join(ralphDir(root), "logs");
   mkdirSync(dir, { recursive: true });
@@ -311,15 +338,22 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   // dele"). Sem `--night`, `provider.orientationModel` é `cfg.orientationModel`
   // sem mudança nenhuma.
   const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), { ...cfg, orientationModel: provider.orientationModel }, tools);
-  const { code, stderr } = await runClaudeStreaming(cfg.sandboxName, {
+  const { code, stderr, timedOut } = await runClaudeStreaming(cfg.sandboxName, {
     workdir,
     prompt,
     model: provider.model,
     env: renderProviderEnv(provider),
+    // O log é escrito evento a evento com `appendFileSync`, então matar o
+    // processo aqui deixa em disco tudo que chegou até o corte.
+    timeoutMs: cfg.iterationTimeoutSeconds * 1000,
     extraArgs: [...extraArgs, ...mcpArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
   const state = renderer.end();
+
+  // Matar o cliente do lado do host não alcança o processo do container: sem
+  // esta linha o `claude` sobrevive ao teto e segue mexendo no repo montado.
+  if (timedOut) await killClaudeInSandbox(cfg.sandboxName);
 
   warnIfSkillMissing(state, cfg);
   warnIfIndexMcpFailed(state, detected);
@@ -327,13 +361,16 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   warnIfSkillCallFailed(state, cfg);
   await warnIfAuthFailed(state, cfg);
 
-  if (code !== 0 && !state.finalResult) {
+  // No estouro do teto, `code` é o do processo que nós matamos e o stderr é
+  // o do corte — quem diz o que aconteceu é `describeIterationTimeout`.
+  if (code !== 0 && !state.finalResult && !timedOut) {
     process.stderr.write(paint(C.red, `\n  claude saiu com código ${code}\n`));
     if (stderr.trim()) process.stderr.write(paint(C.dim, stderr.trim().split("\n").slice(-8).join("\n") + "\n"));
   }
 
   return {
     code,
+    timedOut,
     state,
     logPath: jsonl,
     complete: foundPromise(state, cfg.completionPromise),
@@ -436,7 +473,11 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
       return summary(i, cost, modelTotals, subagentTokens, started, "blocked", costFallback);
     }
     if (result.code !== 0) {
-      process.stdout.write(paint(C.red, `\n✗ iteração ${i} falhou. Log: ${path.relative(root, result.logPath)}\n`));
+      // Estouro do teto para o loop pelo mesmo caminho de qualquer iteração
+      // falha (issue #67): a máquina acabou de dar sinal de travamento, e
+      // largar a próxima iteração nela é como o AFK queima uma noite inteira.
+      if (result.timedOut) reportIterationTimeout(root, cfg, result, i);
+      else process.stdout.write(paint(C.red, `\n✗ iteração ${i} falhou. Log: ${path.relative(root, result.logPath)}\n`));
       return summary(i, cost, modelTotals, subagentTokens, started, "error", costFallback);
     }
     if (cfg.cooldownSeconds > 0 && i < iterations) {

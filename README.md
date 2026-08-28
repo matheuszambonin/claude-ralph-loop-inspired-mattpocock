@@ -201,6 +201,7 @@ repositório alvo (Issues: read/write, Contents: read) e passe
   "extraMounts": [],              // "C:\\caminho" ou "C:\\caminho:ro"
   "protectedBranches": ["main", "master"],
   "cooldownSeconds": 0,
+  "iterationTimeoutSeconds": 3600, // teto de tempo de uma iteração
   "feedbackLoops": [              // detectado do package.json no init
     "npm run typecheck",
     "npm run test",
@@ -208,6 +209,14 @@ repositório alvo (Issues: read/write, Contents: read) e passe
   ]
 }
 ```
+
+`iterationTimeoutSeconds` é o teto de tempo de uma iteração. Estourado, o
+processo do `claude` morre, o log `.jsonl` daquela iteração fica em disco até
+onde chegou e o `afk` para — a mesma saída de qualquer iteração que falha, e
+pelo mesmo motivo: a máquina acabou de dar sinal de travamento. Uma hora é
+generoso de propósito, porque máquina lenta com modelo grande é espera longa
+legítima; o que não é legítimo é `ralph afk --night` queimando a noite inteira
+num subagente em laço fechado.
 
 `feedbackLoops` é a parte que mais decide a qualidade do resultado. São os
 comandos que o agente é proibido de contornar antes de commitar — sem eles,

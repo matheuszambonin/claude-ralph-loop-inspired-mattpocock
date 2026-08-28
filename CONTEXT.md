@@ -93,6 +93,14 @@ ociosa em vez de token pago — não para sigilo, e não para velocidade.
 Ortogonal ao AFK: uma iteração pode ser assistida e ainda assim noturna.
 _Avoid_: modo offline, modo local, modo barato
 
+**Teto da iteração**:
+Quanto tempo uma iteração pode durar antes de o Ralph matar o `claude` e parar
+o loop. É paciência declarada pelo operador, não medida de velocidade: máquina
+lenta com modelo grande espera muito e está certa. O que o teto recusa é a
+espera infinita — o subagente em laço fechado que o **AFK** existe para
+dispensar e que, sem teto, queima a noite na iteração 1.
+_Avoid_: timeout, deadline, limite de tempo
+
 **Orçamento de saída**:
 Quantos tokens o Provedor pode escrever numa resposta. É teto do pedido, não
 capacidade do Provedor, e não se confunde com o contexto, que é o que ele

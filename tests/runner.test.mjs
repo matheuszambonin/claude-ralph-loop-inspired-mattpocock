@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildPrompt, renderPrompt } from "../src/runner.mjs";
+import { buildPrompt, renderPrompt, describeIterationTimeout } from "../src/runner.mjs";
 import { buildOrientationPrompt } from "../src/orientation.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 
@@ -75,4 +75,19 @@ test("issue #10: repositório com índice — o bloco vai para o prompt do subag
 
   assert.doesNotMatch(buildPrompt(root, cfg), /Knowledge index detected/);
   assert.match(buildOrientationPrompt(root, cfg), /Knowledge index detected/);
+});
+
+// Issue #67: o estouro do teto é a única falha de iteração cujo log não tem
+// linha de erro nenhuma — o processo morreu no meio de uma frase. A mensagem
+// é o que sobra, então ela precisa carregar o log e o campo que afrouxa.
+test("describeIterationTimeout: nomeia o log da iteração e o campo do config que afrouxa o teto", () => {
+  const msg = describeIterationTimeout({
+    iteration: 3,
+    seconds: 3600,
+    logPath: ".ralph/logs/2026-08-28-iter-03.jsonl",
+  });
+  assert.match(msg, /iteração 3/);
+  assert.match(msg, /3600/);
+  assert.match(msg, /\.ralph\/logs\/2026-08-28-iter-03\.jsonl/);
+  assert.match(msg, /iterationTimeoutSeconds/);
 });

@@ -250,8 +250,17 @@ export function runAgentInteractive(name, agentArgs = []) {
  * para este processo `claude`, nunca vaza para outro comando do sandbox.
  * Ausente ou vazio (o caso de hoje, Provedor `anthropic`): nenhum prefixo
  * entra nos args, e a invocação sai idêntica à de antes desta issue.
+ *
+ * `timeoutMs` (issue #67) é o teto da iteração: estourado, o processo do
+ * `docker sandbox exec` morre e a promise resolve com `timedOut: true`. Quem
+ * chama decide o que fazer com isso — aqui não há política, só o relógio.
+ * Zero ou ausente mantém o comportamento de antes: espera indefinida.
+ *
+ * `spawnImpl` existe pelo mesmo motivo do `dockerImpl` de
+ * `allowHostLoopback`: é por onde o teste do teto prova que o processo
+ * morre, sem precisar de um Docker de verdade para travar de propósito.
  */
-export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [], env = {}, onChunk }) {
+export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [], env = {}, timeoutMs = 0, onChunk, spawnImpl = spawn }) {
   const claudeArgs = [
     "claude",
     "--print",
@@ -266,8 +275,36 @@ export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [
   const args = ["sandbox", "exec", "-w", workdir, name, ...(envArgs.length ? ["env", ...envArgs] : []), ...claudeArgs];
 
   return new Promise((resolve, reject) => {
-    const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnImpl("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
+    let timedOut = false;
+    let timer = null;
+    let settled = false;
+
+    /**
+     * Resolve uma vez só e larga o filho. Medido em 28/08/2026 contra o
+     * sandbox `ralph-ralph-1pp906k`: matar o cliente do `docker sandbox exec`
+     * **não** produz `close` — ele deixa processos para trás segurando os
+     * pipes, e o Node só emite `close` quando o stdio fecha. Uma promise que
+     * esperasse esse evento trocaria a espera infinita por outra.
+     */
+    const settle = (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref?.();
+      resolve({ code, stderr, timedOut });
+    };
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        child.kill();
+        settle(1);
+      }, timeoutMs);
+    }
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => onChunk(chunk));
     child.stderr.setEncoding("utf8");
@@ -275,9 +312,34 @@ export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [
       stderr += chunk;
       if (stderr.length > 64 * 1024) stderr = stderr.slice(-32 * 1024);
     });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? 1, stderr }));
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => settle(code ?? 1));
   });
+}
+
+/**
+ * Mata o `claude` de dentro do sandbox. Matar o cliente `docker sandbox exec`
+ * do lado do host não basta: o processo do container não recebe o sinal e
+ * segue trabalhando no repo montado — gastando token e ainda podendo commitar
+ * depois que o Ralph já desistiu da iteração (issue #67). O padrão de
+ * argumentos é o da invocação de `runClaudeStreaming`, não `claude` solto, para
+ * não derrubar uma sessão interativa que o operador tenha aberto no mesmo
+ * sandbox. Sem correspondência o `pkill` sai 1, e isso aqui é o caso normal —
+ * o cliente morto pode ter levado o processo junto.
+ */
+export async function killClaudeInSandbox(name) {
+  // Com teto próprio: este `exec` é o mesmo tipo de processo que acabou de não
+  // responder, e um Ralph pendurado na limpeza fica pior do que sem teto
+  // nenhum. Trinta segundos é folgado para um `pkill`.
+  await Promise.race([
+    execCapture(name, ["pkill", "-f", "claude --print"]),
+    new Promise((r) => setTimeout(r, 30_000).unref()),
+  ]);
 }
 
 /** Caminho, dentro do container, de um caminho do host. */

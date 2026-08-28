@@ -16,7 +16,7 @@ import {
   describeHostLoopbackOpened,
   mountsFor,
 } from "./sandbox.mjs";
-import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth } from "./runner.mjs";
+import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth, reportIterationTimeout } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
 import {
   detect as detectKnowledgeIndex,
@@ -412,6 +412,9 @@ async function cmdOnce(flags) {
   const res = await runIteration(root, cfg, { iteration: 1, total: 1, prompt, extraArgs: flags._passthrough ?? [], provider });
   if (res.complete) process.stdout.write(paint(C.green, "\n✓ backlog concluído.\n"));
   else if (res.blocked) process.stdout.write(paint(C.yellow, "\n■ Ralph pediu um humano.\n"));
+  // O teto (issue #67) vale no `once` também: sem esta linha a iteração morta
+  // pelo relógio sai só como código 1, e nem quem está assistindo saberia por quê.
+  else if (res.timedOut) reportIterationTimeout(root, cfg, res, 1);
   process.exit(res.code === 0 ? 0 : 1);
 }
 

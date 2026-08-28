@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeSandboxCreateFailure, allowHostLoopback, describeHostLoopbackOpened, HOST_LOOPBACK_CIDR } from "../src/sandbox.mjs";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { describeSandboxCreateFailure, allowHostLoopback, describeHostLoopbackOpened, HOST_LOOPBACK_CIDR, runClaudeStreaming } from "../src/sandbox.mjs";
 
 const VIRTIOFS_PANIC =
   "create runtime: create/start VM: POST VM create failed: status 500:\n" +
@@ -64,4 +66,71 @@ test("describeHostLoopbackOpened: anuncia o que a rota amplia, não só que abri
   const msg = describeHostLoopbackOpened();
   assert.match(msg, /localhost/);
   assert.match(msg, /alcançar/);
+});
+
+/**
+ * Processo de mentira no lugar do `docker sandbox exec`: streams de verdade
+ * para o código sob teste tratá-lo como trata o filho real, e um `kill` que
+ * registra o sinal em vez de matar coisa nenhuma.
+ */
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.signals = [];
+  child.kill = (signal = "SIGTERM") => {
+    child.signals.push(signal);
+    return true;
+  };
+  return child;
+}
+
+// Medido em 28/08/2026: matar o cliente do `docker sandbox exec` não produz
+// `close` — ele deixa processos para trás segurando os pipes. Por isso o filho
+// de mentira não fecha sozinho: é assim que o real se comporta.
+test("runClaudeStreaming: estourado o teto, o processo é morto e a promise resolve sem esperar o close", async () => {
+  const child = fakeChild();
+  const res = await runClaudeStreaming("sandbox-de-mentira", {
+    workdir: "/repo",
+    prompt: "trabalhe",
+    model: "sonnet",
+    timeoutMs: 20,
+    onChunk: () => {},
+    spawnImpl: () => child,
+  });
+  assert.equal(res.timedOut, true);
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  // Quem chama trata o estouro pelo mesmo caminho de `code !== 0`.
+  assert.notEqual(res.code, 0);
+});
+
+test("runClaudeStreaming: iteração que termina antes do teto sai limpa, e o teto não dispara depois", async () => {
+  const child = fakeChild();
+  setTimeout(() => child.emit("close", 0), 5);
+  const res = await runClaudeStreaming("sandbox-de-mentira", {
+    workdir: "/repo",
+    prompt: "trabalhe",
+    model: "sonnet",
+    timeoutMs: 10_000,
+    onChunk: () => {},
+    spawnImpl: () => child,
+  });
+  assert.equal(res.code, 0);
+  assert.equal(res.timedOut, false);
+  assert.deepEqual(child.signals, []);
+});
+
+test("runClaudeStreaming: sem teto declarado, a espera segue indefinida — o comportamento de antes da issue #67", async () => {
+  const child = fakeChild();
+  setTimeout(() => child.emit("close", 0), 30);
+  const res = await runClaudeStreaming("sandbox-de-mentira", {
+    workdir: "/repo",
+    prompt: "trabalhe",
+    model: "sonnet",
+    timeoutMs: 0,
+    onChunk: () => {},
+    spawnImpl: () => child,
+  });
+  assert.equal(res.code, 0);
+  assert.deepEqual(child.signals, []);
 });
