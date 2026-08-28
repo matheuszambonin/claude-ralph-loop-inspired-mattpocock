@@ -73,6 +73,28 @@ const TOOL_USE_PROBE_TOOL = {
   input_schema: { type: "object", properties: { result: { type: "number" } }, required: ["result"] },
 };
 const TOOL_USE_PROBE_PROMPT = "What is 2 + 2? Use the `answer` tool to report the result — do not answer in plain text.";
+/**
+ * Orçamento de saída da prova de `tool_use`, o mesmo 64 de sempre — a folga da
+ * issue #64 é só do canário, e a medição diz por quê: naquela corrida contra
+ * `ornith:9b`, um modelo que raciocina, a reprovação que saiu foi a de
+ * truncamento, e `describeDegradation` só chega lá com `toolUse` verdadeiro.
+ * O raciocínio para chamar `answer` com `2 + 2` cabe nos 64; o raciocínio para
+ * achar uma senha a cem mil tokens de distância não cabia.
+ */
+const TOOL_USE_MAX_TOKENS = 64;
+
+/**
+ * Orçamento de saída do canário, folgado de propósito (issue #64).
+ *
+ * Medido no repo alvo Terraços contra `ornith:9b`, com `minContext` 131072 e
+ * teto de 64: `prompt_eval_count` 100201, `eval_count` 64, `response` vazio e
+ * o raciocínio já com a senha certa em mãos. O modelo leu o prompt inteiro e
+ * gastou o orçamento pensando, e o canário acusava truncamento de prompt.
+ *
+ * O conserto é teto, e não ler o bloco de raciocínio — o argumento inteiro está
+ * no doc de `probe()`, junto do critério que ele protege.
+ */
+const CANARY_MAX_TOKENS = 1024;
 
 const CANARY_START = "SENHA_INICIAL";
 const CANARY_END = "SENHA_FINAL";
@@ -235,7 +257,7 @@ function isTimeout(err) {
  * Impura, mas só de rede (issue #32): faz as três provas do Provedor local a
  * partir do host, com o cliente `httpJson` acima — biblioteca padrão, zero
  * dependência nova. Devolve
- * `{ reachable, toolUse, contextOk, contextTimedOut, redirect }`.
+ * `{ reachable, toolUse, contextOk, contextTimedOut, outputExhausted, redirect }`.
  *
  * Inalcançável (erro de rede ou `/api/tags` não responde) encurta as outras
  * duas provas para reprovadas: sem alcance não há como testar o resto, e uma
@@ -259,6 +281,18 @@ function isTimeout(err) {
  * reprova, em vez de passar numa prova de tamanho fixo sem relação com o que
  * o operador configurou.
  *
+ * O critério lê só os blocos de texto, e isso é escolha (issue #64): o modelo
+ * que raciocina antes de responder cita as duas senhas enquanto pensa, e
+ * aceitar o raciocínio como resposta apagaria a distinção que a prova existe
+ * para fazer — o canário passaria a reprovar o Provedor íntegro por outro
+ * motivo, ou deixaria de reprovar o que trunca. O que faltava ao modelo que
+ * pensa não era leitura, era teto de saída (veja `CANARY_MAX_TOKENS`).
+ *
+ * `outputExhausted` (issue #64) é o canário que voltou sem texto no teto de
+ * saída — `stop_reason: "max_tokens"` —, o modelo que gastou o orçamento
+ * pensando. `contextOk` é falso aqui também, mas a inferência rodou inteira:
+ * nada foi truncado, e a prosa não pode herdar a frase de truncamento.
+ *
  * `redirect` (issue #61) é o 3xx que qualquer uma das três pernas viu, com o
  * destino do `Location`, ou `null`. Ele não é um veredito a mais: a perna que
  * o recebeu já reprovou, como reprovaria com qualquer não-2xx. Ele existe para
@@ -266,7 +300,14 @@ function isTimeout(err) {
  * modelo por uma resposta que nunca chegou a ser inferência.
  */
 export async function probe(provider, { fetchImpl = httpJson } = {}) {
-  const unreachable = { reachable: false, toolUse: false, contextOk: false, contextTimedOut: false, redirect: null };
+  const unreachable = {
+    reachable: false,
+    toolUse: false,
+    contextOk: false,
+    contextTimedOut: false,
+    outputExhausted: false,
+    redirect: null,
+  };
   try {
     const tags = await fetchImpl(joinUrl(provider.baseUrl, "/api/tags"), {
       signal: AbortSignal.timeout(REACH_TIMEOUT_MS),
@@ -284,7 +325,7 @@ export async function probe(provider, { fetchImpl = httpJson } = {}) {
   try {
     const toolRes = await postMessages(fetchImpl, provider, {
       model: provider.model,
-      max_tokens: 64,
+      max_tokens: TOOL_USE_MAX_TOKENS,
       tools: [TOOL_USE_PROBE_TOOL],
       messages: [{ role: "user", content: TOOL_USE_PROBE_PROMPT }],
     });
@@ -296,21 +337,33 @@ export async function probe(provider, { fetchImpl = httpJson } = {}) {
 
   let contextOk = false;
   let contextTimedOut = false;
+  let outputExhausted = false;
   try {
     const canaryRes = await postMessages(fetchImpl, provider, {
       model: provider.model,
-      max_tokens: 64,
+      max_tokens: CANARY_MAX_TOKENS,
       messages: [{ role: "user", content: canaryPrompt(provider.minContext) }],
     });
+    // Só os blocos de texto: é aqui que o raciocínio fica de fora (issue #64).
     const answered = (canaryRes.content ?? []).map((b) => b.text ?? "").join("");
     contextOk = answered.includes(CANARY_START) && !answered.includes(CANARY_END);
+    // Texto vazio no teto de saída: a inferência rodou inteira e não sobrou
+    // orçamento pra resposta. Estado distinto de prompt truncado, e o critério
+    // acima não o distingue sozinho.
+    //
+    // Exige texto vazio de propósito. Quem escreveu a senha do fim antes de
+    // bater no teto provou o truncamento, e continua reprovando por ele. E
+    // texto parcial sem senha nenhuma é ambíguo: dizer ali que o Provedor leu
+    // o prompt inteiro seria afirmar o que não foi provado, e o vazio é o caso
+    // que a medição do ticket mostra.
+    outputExhausted = canaryRes.stop_reason === "max_tokens" && answered.trim() === "";
   } catch (err) {
     contextOk = false;
     contextTimedOut = isTimeout(err);
     redirect ??= err?.redirect ?? null;
   }
 
-  return { reachable: true, toolUse, contextOk, contextTimedOut, redirect };
+  return { reachable: true, toolUse, contextOk, contextTimedOut, outputExhausted, redirect };
 }
 
 /**
@@ -455,7 +508,8 @@ export function describeProbeStart(provider) {
  * Prosa pro comando que conserta cada reprovação da sonda (CLAUDE.md: "erro
  * de usuário diz o comando que conserta"). Sonda aprovada em tudo devolve
  * `null` — nenhuma linha pro `doctor` pintar. A ordem dos ramos é o
- * comportamento: redirect → alcance → timeout → tool_use → truncamento.
+ * comportamento: redirect → alcance → timeout → tool_use → orçamento de saída →
+ * truncamento.
  *
  * O redirect (issue #61) vem antes de tudo porque ele explica as reprovações
  * que vêm depois, e nenhuma delas explica o redirect: um 3xx em `/api/tags`
@@ -490,6 +544,12 @@ export function describeProbeStart(provider) {
  * estourou por lentidão. Um Provedor que é lento **e** cujo modelo escreve a
  * chamada como texto recebe primeiro a prosa do teto, de propósito: na dúvida,
  * prescrever o conserto barato.
+ *
+ * O orçamento de saída esgotado (`outputExhausted`, issue #64) vem logo antes
+ * do truncamento porque é a mesma prova reprovando por outra causa, e a causa
+ * é conhecida: o `stop_reason` disse. Prescrever `OLLAMA_CONTEXT_LENGTH` aqui
+ * manda o operador reconfigurar o host por um problema que não é de contexto,
+ * e é o Provedor íntegro que paga — ele leu o prompt inteiro.
  *
  * `minContext` prescreve o mesmo número que o canário exigiu (issue #42) —
  * quem chama passa `provider.minContext`, o mesmo valor que `probe()` usou
@@ -549,6 +609,14 @@ export function describeDegradation(probeResult, minContext, baseUrl, sandboxNam
     return (
       "Provedor local não emite tool_use estruturado — o modelo escreve a chamada de ferramenta como texto, " +
       "mesmo anunciando a capacidade. Troque nightProvider.model em .ralph/config.json por um modelo que passe na prova."
+    );
+  }
+  if (probeResult.outputExhausted) {
+    return (
+      "Provedor local leu o prompt do canário inteiro e não sobrou orçamento de saída: a resposta veio vazia, " +
+      `com os ${CANARY_MAX_TOKENS} tokens do teto gastos no raciocínio. O contexto do Provedor está ` +
+      "fora de suspeita — a inferência rodou até o fim. Troque nightProvider.model em .ralph/config.json por um " +
+      "modelo que feche o raciocínio e ainda responda dentro desse teto, ou desligue o raciocínio do modelo atual."
     );
   }
   if (!probeResult.contextOk) {

@@ -294,8 +294,13 @@ o sinal de "quero as provas agora" é pedir, não ter configurado.
 uma chamada de ferramenta resolve — alguns modelos anunciam a capacidade e
 escrevem a chamada como texto solto, e reprovam mesmo assim) e o **canário de
 contexto** (um prompt maior que qualquer `num_ctx` padrão do Ollama, que só
-aprova se a resposta cita o início do texto e não o fim). O canário tem teto de
-5 minutos: uma prova que não conclui nele é reportada como prova incompleta —
+aprova se a resposta cita o início do texto e não o fim). O canário lê só os
+blocos de texto da resposta, nunca o raciocínio: o modelo que pensa antes de
+responder cita as duas senhas enquanto pensa, e aceitar isso apagaria a
+distinção que a prova existe para fazer. Resposta vazia por esgotar o orçamento
+de saída é reportada como orçamento, não como truncamento. Cada prova tem o teto
+que o operador declarou em `nightProvider.probeTimeoutSeconds` (15 minutos por
+padrão): uma prova que não conclui nele é reportada como prova incompleta —
 o Provedor pode estar íntegro, só lento —, nunca como truncamento. Qualquer
 reprovação sai com o comando que conserta. Pular direto para `ralph afk --night` funciona,
 mas gasta a primeira noite aprendendo o que `once` teria mostrado num minuto.

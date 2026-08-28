@@ -92,3 +92,12 @@ flag explícita e nunca pelo relógio. Existe para gastar tempo de máquina
 ociosa em vez de token pago — não para sigilo, e não para velocidade.
 Ortogonal ao AFK: uma iteração pode ser assistida e ainda assim noturna.
 _Avoid_: modo offline, modo local, modo barato
+
+**Orçamento de saída**:
+Quantos tokens o Provedor pode escrever numa resposta. É teto do pedido, não
+capacidade do Provedor, e não se confunde com o contexto, que é o que ele
+consegue ler. A distinção só passou a doer quando o modelo que raciocina antes
+de responder virou norma: o raciocínio gasta orçamento de saída e não deixa
+texto, e uma sonda que confunde os dois acusa de truncar o prompt quem leu o
+prompt inteiro.
+_Avoid_: max_tokens, limite de tokens, teto de resposta

@@ -136,13 +136,14 @@ function jsonResponse(body) {
 
 /** fetchImpl injetado: `/api/tags` sempre aprova, `/v1/messages` devolve a
  *  resposta de tool_use quando o corpo declara `tools`, senão a do canário. */
-function mockFetch({ toolUseResponse, canaryAnswer, canaryError }) {
+function mockFetch({ toolUseResponse, canaryAnswer, canaryError, canaryResponse }) {
   return async (url, opts) => {
     if (url.endsWith("/api/tags")) return jsonResponse({});
     if (url.endsWith("/v1/messages")) {
       const body = JSON.parse(opts.body);
       if (body.tools) return jsonResponse(toolUseResponse);
       if (canaryError) throw canaryError;
+      if (canaryResponse) return jsonResponse(canaryResponse);
       return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: canaryAnswer }] });
     }
     throw new Error("url inesperada: " + url);
@@ -204,6 +205,7 @@ test("probe: porta fechada (fetchImpl lança) devolve reachable false sem propag
     toolUse: false,
     contextOk: false,
     contextTimedOut: false,
+    outputExhausted: false,
     redirect: null,
   });
 });
@@ -261,7 +263,14 @@ test("probe: devolve só os vereditos das provas — nada da resposta bruta do c
     canaryAnswer: "A senha é SENHA_INICIAL",
   });
   const result = await probe(fakeProvider(), { fetchImpl });
-  assert.deepEqual(Object.keys(result).sort(), ["contextOk", "contextTimedOut", "reachable", "redirect", "toolUse"]);
+  assert.deepEqual(Object.keys(result).sort(), [
+    "contextOk",
+    "contextTimedOut",
+    "outputExhausted",
+    "reachable",
+    "redirect",
+    "toolUse",
+  ]);
 });
 
 // --- lentidão não é truncamento (issue #56) ---
@@ -379,6 +388,7 @@ test("probeBoth: as duas pernas aprovando devolve alcance com as outras provas d
     toolUse: true,
     contextOk: true,
     contextTimedOut: false,
+    outputExhausted: false,
     redirect: null,
     reachableFromHost: true,
     reachableFromSandbox: true,
@@ -857,4 +867,154 @@ test("describeDegradation: sem redirect, as reprovações de sempre seguem intac
   const probeResult = { reachable: true, toolUse: false, contextOk: false, contextTimedOut: false, redirect: null };
   const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
   assert.match(msg, /escreve a chamada de ferramenta como texto/);
+});
+
+// --- o modelo que pensa antes de responder (issue #64) ---
+//
+// `thinking` é a norma nos lançamentos recentes, e a medição do ticket mostra
+// o raciocínio consumindo o orçamento de saída inteiro: o texto voltava vazio
+// e o Provedor íntegro era acusado de truncar o prompt. O que estes testes
+// prendem é o critério continuar lendo só os blocos de texto, e a resposta
+// vazia por teto de saída ter prosa própria.
+
+test("probe: o bloco de raciocínio não conta como resposta — citar a senha do fim ao pensar não reprova", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryResponse: {
+      stop_reason: "end_turn",
+      content: [
+        { type: "thinking", thinking: "O texto começa em SENHA_INICIAL e termina em SENHA_FINAL." },
+        { type: "text", text: "SENHA_INICIAL" },
+      ],
+    },
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, true);
+  assert.equal(result.outputExhausted, false);
+});
+
+test("probe: raciocínio que cita a senha do começo, sem texto, não aprova o canário", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryResponse: {
+      stop_reason: "max_tokens",
+      content: [{ type: "thinking", thinking: "A senha do início é SENHA_INICIAL." }],
+    },
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, false);
+  assert.equal(result.outputExhausted, true);
+});
+
+test("probe: resposta vazia por max_tokens não é truncamento nem lentidão", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryResponse: { stop_reason: "max_tokens", content: [{ type: "text", text: "" }] },
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.outputExhausted, true);
+  assert.equal(result.contextTimedOut, false);
+  assert.equal(result.contextOk, false);
+});
+
+test("probe: texto que cita a senha do fim reprova por truncamento mesmo com stop_reason max_tokens", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryResponse: { stop_reason: "max_tokens", content: [{ type: "text", text: "A senha é SENHA_FINAL" }] },
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, false);
+  assert.equal(result.outputExhausted, false);
+});
+
+test("probe: resposta vazia sem max_tokens não vira esgotamento de orçamento", async () => {
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryAnswer: "" });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.outputExhausted, false);
+  assert.equal(result.contextOk, false);
+});
+
+test("probe: canário morto no teto de tempo não é reportado como orçamento de saída", async () => {
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryError: timeoutError() });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextTimedOut, true);
+  assert.equal(result.outputExhausted, false);
+});
+
+test("probe: Provedor inalcançável não reporta esgotamento de orçamento", async () => {
+  const fetchImpl = async () => {
+    throw new Error("ECONNREFUSED");
+  };
+  assert.equal((await probe(fakeProvider(), { fetchImpl })).outputExhausted, false);
+});
+
+test("probe: o canário pede mais orçamento de saída que a prova de tool_use", async () => {
+  const seen = {};
+  const fetchImpl = async (url, opts) => {
+    if (url.endsWith("/api/tags")) return jsonResponse({});
+    const body = JSON.parse(opts.body);
+    if (body.tools) {
+      seen.toolUse = body.max_tokens;
+      return jsonResponse(APPROVED_TOOL_USE);
+    }
+    seen.canary = body.max_tokens;
+    return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: "SENHA_INICIAL" }] });
+  };
+  await probe(fakeProvider(), { fetchImpl });
+  assert.equal(seen.toolUse, 64);
+  assert.ok(seen.canary > seen.toolUse);
+});
+
+test("describeDegradation: orçamento de saída esgotado não fala em truncamento de prompt", () => {
+  const probeResult = {
+    reachable: true,
+    toolUse: true,
+    contextOk: false,
+    contextTimedOut: false,
+    outputExhausted: true,
+    redirect: null,
+  };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.doesNotMatch(msg, /trunca/);
+  assert.doesNotMatch(msg, /OLLAMA_CONTEXT_LENGTH/);
+});
+
+test("describeDegradation: orçamento de saída esgotado diz que o prompt foi lido e manda trocar o modelo", () => {
+  const probeResult = {
+    reachable: true,
+    toolUse: true,
+    contextOk: false,
+    contextTimedOut: false,
+    outputExhausted: true,
+    redirect: null,
+  };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /nightProvider\.model/);
+  assert.match(msg, /raciocínio/);
+});
+
+test("describeDegradation: truncamento sem esgotamento segue palavra por palavra como hoje", () => {
+  const truncated = { reachable: true, toolUse: true, contextOk: false, contextTimedOut: false, redirect: null };
+  const msg = describeDegradation(truncated, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /trunca o prompt em silêncio/);
+  assert.match(msg, /OLLAMA_CONTEXT_LENGTH=65536/);
+});
+
+test("describeDegradation: esgotamento com redirect ou sem alcance perde para as pernas anteriores", () => {
+  const withRedirect = {
+    reachable: true,
+    toolUse: true,
+    contextOk: false,
+    outputExhausted: true,
+    redirect: { status: 302, location: "http://outro:11434/" },
+  };
+  assert.match(
+    describeDegradation(withRedirect, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900),
+    /redirect/,
+  );
+  const unreachable = { reachable: false, toolUse: false, contextOk: false, outputExhausted: true, redirect: null };
+  assert.match(
+    describeDegradation(unreachable, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900),
+    /OLLAMA_HOST/,
+  );
 });
