@@ -16,7 +16,7 @@ import {
   describeHostLoopbackOpened,
   mountsFor,
 } from "./sandbox.mjs";
-import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth, reportIterationTimeout } from "./runner.mjs";
+import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth, reportIterationTimeout, reportOrientationLoop } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
 import {
   detect as detectKnowledgeIndex,
@@ -415,6 +415,9 @@ async function cmdOnce(flags) {
   // O teto (issue #67) vale no `once` também: sem esta linha a iteração morta
   // pelo relógio sai só como código 1, e nem quem está assistindo saberia por quê.
   else if (res.timedOut) reportIterationTimeout(root, cfg, res, 1);
+  // E o corte por laço (issue #74) pelo mesmo motivo: aqui quem assiste viu a
+  // Orientação repetindo, mas quem lê o código de saída depois não viu nada.
+  else if (res.looped) reportOrientationLoop(root, cfg, res, 1);
   process.exit(res.code === 0 ? 0 : 1);
 }
 

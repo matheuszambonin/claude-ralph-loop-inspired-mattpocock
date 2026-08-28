@@ -10,7 +10,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatOrientationLoop } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -297,6 +297,32 @@ export function describeIterationTimeout({ iteration, seconds, logPath }) {
 }
 
 /**
+ * Puro: o que o operador lê quando a Orientação travou em laço (issue #74).
+ * Aponta `orientationModel` porque é o campo que muda o desfecho — nas quatro
+ * iterações da issue a Orientação tinha herdado o modelo de 9B do Provedor
+ * local, e nenhuma das 15 anteriores em Sonnet repetiu uma chamada sequer.
+ */
+export function describeOrientationLoop({ iteration, loop, logPath }) {
+  return (
+    `iteração ${iteration} travou em laço: ${formatOrientationLoop(loop)}.\n` +
+    `  Log até o corte: ${logPath}\n` +
+    `  Se o Provedor da Orientação é pequeno demais para o passo 1, aponte ` +
+    `orientationModel (ou nightProvider.orientationModel) para um modelo maior.`
+  );
+}
+
+/**
+ * Anuncia o corte. Vermelho como o teto de tempo: a iteração morreu sem
+ * entregar. O loop, esse, segue — ver `runLoop`.
+ */
+export function reportOrientationLoop(root, cfg, result, iteration) {
+  const logPath = path.relative(root, result.logPath);
+  process.stdout.write(
+    paint(C.red, `\n✗ ${describeOrientationLoop({ iteration, loop: result.state.orientationLoop, logPath })}\n`)
+  );
+}
+
+/**
  * Escreve o estouro na tela. Mora aqui, e não em cada chamador, porque o `afk`
  * e o `once` anunciam a mesma coisa — e o `once` só passou a ter o que anunciar
  * quando o teto passou a existir.
@@ -360,7 +386,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   // dele"). Sem `--night`, `provider.orientationModel` é `cfg.orientationModel`
   // sem mudança nenhuma.
   const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), { ...cfg, orientationModel: provider.orientationModel }, tools);
-  const { code, stderr, timedOut } = await runClaudeStreaming(cfg.sandboxName, {
+  const { code, stderr, timedOut, aborted } = await runClaudeStreaming(cfg.sandboxName, {
     workdir,
     prompt,
     model: provider.model,
@@ -368,6 +394,11 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     // O log é escrito evento a evento com `appendFileSync`, então matar o
     // processo aqui deixa em disco tudo que chegou até o corte.
     timeoutMs: cfg.iterationTimeoutSeconds * 1000,
+    // O teto de tempo sozinho não alcança o laço (issue #74): em 28/08/2026 as
+    // quatro iterações travadas foram mortas à mão entre 1,5 e 9,5 minutos, e
+    // sem o Ctrl+C teriam ficado a hora inteira do teto. Aqui o corte sai em
+    // segundos, assim que a Orientação repete a mesma chamada dez vezes.
+    abortWhen: () => renderer.state.orientationLoop !== null,
     extraArgs: [...extraArgs, ...mcpArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
@@ -375,18 +406,18 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
 
   // Matar o cliente do lado do host não alcança o processo do container: sem
   // esta linha o `claude` sobrevive ao teto e segue mexendo no repo montado.
-  if (timedOut) await killClaudeInSandbox(cfg.sandboxName);
+  if (timedOut || aborted) await killClaudeInSandbox(cfg.sandboxName);
 
   warnIfSkillMissing(state, cfg);
   warnIfIndexMcpFailed(state, detected);
   warnIfOrientationCeilingExceeded(state);
-  warnIfOrientationMissed(state, cfg, prompt, timedOut);
+  warnIfOrientationMissed(state, cfg, prompt, timedOut || aborted);
   warnIfSkillCallFailed(state, cfg);
   await warnIfAuthFailed(state, cfg);
 
   // No estouro do teto, `code` é o do processo que nós matamos e o stderr é
   // o do corte — quem diz o que aconteceu é `describeIterationTimeout`.
-  if (code !== 0 && !state.finalResult && !timedOut) {
+  if (code !== 0 && !state.finalResult && !timedOut && !aborted) {
     process.stderr.write(paint(C.red, `\n  claude saiu com código ${code}\n`));
     if (stderr.trim()) process.stderr.write(paint(C.dim, stderr.trim().split("\n").slice(-8).join("\n") + "\n"));
   }
@@ -394,6 +425,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   return {
     code,
     timedOut,
+    looped: aborted,
     state,
     logPath: jsonl,
     complete: foundPromise(state, cfg.completionPromise),
@@ -498,7 +530,14 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
       process.stdout.write(paint(C.yellow, `\n■ Ralph travou na iteração ${i} e pediu um humano.\n`));
       return summary(i, cost, modelTotals, subagentTokens, started, "blocked", costing);
     }
-    if (result.code !== 0) {
+    // Laço é a exceção à regra do #67, e a única: a iteração morre, o loop
+    // segue. Um Provedor que trava numa iteração não travou na máquina — em
+    // 28/08/2026 as travadas e as boas se alternaram no mesmo `ornith:9b`,
+    // quatro entregas entre quatro laços, e a próxima iteração escolhe outro
+    // ticket. O que o corte já comprou é o laço custar segundos, não uma hora.
+    if (result.looped) {
+      reportOrientationLoop(root, cfg, result, i);
+    } else if (result.code !== 0) {
       // Estouro do teto para o loop pelo mesmo caminho de qualquer iteração
       // falha (issue #67): a máquina acabou de dar sinal de travamento, e
       // largar a próxima iteração nela é como o AFK queima uma noite inteira.

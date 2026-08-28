@@ -134,3 +134,47 @@ test("runClaudeStreaming: sem teto declarado, a espera segue indefinida — o co
   assert.equal(res.code, 0);
   assert.deepEqual(child.signals, []);
 });
+
+
+test("runClaudeStreaming: sem `abortWhen`, a iteração corre como antes da issue #74", async () => {
+  const child = fakeChild();
+  setTimeout(() => {
+    child.stdout.write('{"type":"assistant"}\n');
+    child.emit("close", 0);
+  }, 5);
+  const res = await runClaudeStreaming("sandbox-de-mentira", {
+    workdir: "/repo",
+    prompt: "trabalhe",
+    model: "sonnet",
+    timeoutMs: 10_000,
+    onChunk: () => {},
+    spawnImpl: () => child,
+  });
+  assert.equal(res.code, 0);
+  assert.equal(res.aborted, false);
+  assert.deepEqual(child.signals, []);
+});
+test("runClaudeStreaming: `abortWhen` corta a iteração como o teto corta, e diz que foi corte (issue #74)", async () => {
+  const child = fakeChild();
+  let chunks = 0;
+  setTimeout(() => {
+    child.stdout.write('{"type":"assistant"}\n');
+    child.stdout.write('{"type":"assistant"}\n');
+  }, 5);
+  const res = await runClaudeStreaming("sandbox-de-mentira", {
+    workdir: "/repo",
+    prompt: "trabalhe",
+    model: "sonnet",
+    timeoutMs: 10_000,
+    onChunk: () => chunks++,
+    // O laço só aparece depois de a Orientação já ter rodado um tanto; aqui,
+    // depois do segundo pedaço de stdout.
+    abortWhen: () => chunks >= 2,
+    spawnImpl: () => child,
+  });
+  assert.equal(res.aborted, true);
+  // Não é estouro de teto: quem lê o resultado precisa distinguir os dois.
+  assert.equal(res.timedOut, false);
+  assert.deepEqual(child.signals, ["SIGTERM"]);
+  assert.notEqual(res.code, 0);
+});

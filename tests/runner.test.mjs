@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildPrompt, renderPrompt, describeIterationTimeout } from "../src/runner.mjs";
+import { buildPrompt, renderPrompt, describeIterationTimeout, describeOrientationLoop } from "../src/runner.mjs";
 import { buildOrientationPrompt } from "../src/orientation.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 
@@ -90,4 +90,25 @@ test("describeIterationTimeout: nomeia o log da iteração e o campo do config q
   assert.match(msg, /3600/);
   assert.match(msg, /\.ralph\/logs\/2026-08-28-iter-03\.jsonl/);
   assert.match(msg, /iterationTimeoutSeconds/);
+});
+
+test("describeOrientationLoop: nomeia a iteração, o comando repetido e o log (issue #74)", () => {
+  const msg = describeOrientationLoop({
+    iteration: 3,
+    loop: { tool: "Bash", detail: "gh issue view 16 --json state", count: 240 },
+    logPath: ".ralph/logs/2026-08-28T20-03-11-279Z-iter-01.jsonl",
+  });
+  assert.match(msg, /iteração 3/);
+  assert.match(msg, /240/);
+  assert.match(msg, /gh issue view 16/);
+  assert.match(msg, /2026-08-28T20-03-11-279Z-iter-01\.jsonl/);
+});
+
+test("describeOrientationLoop: aponta o modelo da Orientação, que é o que o operador troca", () => {
+  const msg = describeOrientationLoop({
+    iteration: 1,
+    loop: { tool: "Bash", detail: "gh issue view 16", count: 30 },
+    logPath: ".ralph/logs/x.jsonl",
+  });
+  assert.match(msg, /orientationModel/);
 });

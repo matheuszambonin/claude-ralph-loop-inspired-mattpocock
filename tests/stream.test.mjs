@@ -7,6 +7,8 @@ import {
   formatOrientationWarning,
   formatSkillFailureWarning,
   formatOrientationMissWarning,
+  formatOrientationLoop,
+  ORIENTATION_LOOP_LIMIT,
 } from "../src/stream.mjs";
 
 function feed(renderer, evt) {
@@ -454,4 +456,71 @@ test("createStreamRenderer + formatOrientationMissWarning: a iteração das 14:1
   feed(renderer, { type: "result", subtype: "success", total_cost_usd: 2.9, num_turns: 118 });
   const state = renderer.end();
   assert.match(formatOrientationMissWarning(state.orientationSummaries, state.orientationDelegatedTo), /contexto principal/);
+});
+
+/** Um turno do subagente `orientation`: o modelo pede uma ferramenta e nada mais. */
+function orientationTool(id, name, input) {
+  return {
+    type: "assistant",
+    subagent_type: "orientation",
+    message: { role: "assistant", model: "ornith:9b", content: [{ type: "tool_use", id, name, input }] },
+  };
+}
+
+function repeat(n, fn) {
+  const renderer = createStreamRenderer();
+  for (let i = 0; i < n; i++) feed(renderer, fn(i));
+  return renderer.end();
+}
+
+const VIEW_16 = { command: "gh issue view 16 --json number,title,state,labels" };
+
+test("createStreamRenderer: a Orientação que repete o mesmo tool_use vira laço (issue #74)", () => {
+  const state = repeat(ORIENTATION_LOOP_LIMIT + 2, (i) => orientationTool(`c${i}`, "Bash", VIEW_16));
+  assert.equal(state.orientationLoop?.count, ORIENTATION_LOOP_LIMIT + 2);
+  assert.equal(state.orientationLoop?.tool, "Bash");
+  assert.match(state.orientationLoop?.detail, /gh issue view 16/);
+});
+
+test("createStreamRenderer: a Orientação que lê muita coisa diferente não é laço", () => {
+  const state = repeat(ORIENTATION_LOOP_LIMIT * 3, (i) =>
+    orientationTool(`c${i}`, "Bash", { command: `gh issue view ${i} --json state` })
+  );
+  assert.equal(state.orientationLoop, null);
+});
+
+test("createStreamRenderer: repetição no contexto principal não é laço da Orientação (issue #74)", () => {
+  // O agente principal que repete um comando é outro sintoma — a iteração das
+  // 19:18 de 28/08/2026 morreu assim, e o teto de tempo é quem responde por ela.
+  const state = repeat(ORIENTATION_LOOP_LIMIT * 2, (i) => ({
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: `c${i}`, name: "Bash", input: VIEW_16 }] },
+  }));
+  assert.equal(state.orientationLoop, null);
+});
+
+test("createStreamRenderer: a repetição das iterações que entregaram fica abaixo do teto (issue #74)", () => {
+  // Máximo medido em 28/08/2026 nas iterações com `result: success`: 2x.
+  const state = repeat(2, (i) => orientationTool(`c${i}`, "Bash", VIEW_16));
+  assert.equal(state.orientationLoop, null);
+});
+
+test("createStreamRenderer: o ciclo que alterna três tickets também é laço (issue #74)", () => {
+  // Como a iteração das 20:03 começou: 18, 19, 20, 18, 19, 20 — nenhuma
+  // repetição consecutiva, e ainda assim ninguém sai do lugar.
+  const state = repeat(ORIENTATION_LOOP_LIMIT * 3, (i) =>
+    orientationTool(`c${i}`, "Bash", { command: `gh issue view ${18 + (i % 3)} --json state` })
+  );
+  assert.equal(state.orientationLoop?.count, ORIENTATION_LOOP_LIMIT);
+});
+
+test("formatOrientationLoop: nomeia o comando repetido e quantas vezes", () => {
+  const line = formatOrientationLoop({ tool: "Bash", detail: "gh issue view 16 --json state", count: 240 });
+  assert.match(line, /240/);
+  assert.match(line, /gh issue view 16/);
+  assert.match(line, /Orientação/);
+});
+
+test("formatOrientationLoop: sem laço, nenhuma linha", () => {
+  assert.equal(formatOrientationLoop(null), "");
 });

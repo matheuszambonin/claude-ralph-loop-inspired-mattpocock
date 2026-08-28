@@ -52,6 +52,14 @@ function describeTool(name, input = {}) {
   }
 }
 
+/**
+ * Quantas vezes a Orientação pode repetir o mesmo `tool_use` antes de o Ralph
+ * chamar aquilo de laço e cortar a iteração (issue #74). Máximo medido nas
+ * iterações que entregaram: 2 repetições. Mínimo nas que travaram: 19. Dez
+ * fica no meio da folga, longe das duas pontas.
+ */
+export const ORIENTATION_LOOP_LIMIT = 10;
+
 export function createStreamRenderer({ onEvent } = {}) {
   const state = {
     text: "",
@@ -68,6 +76,7 @@ export function createStreamRenderer({ onEvent } = {}) {
     orientationSummaries: 0,
     orientationDelegatedTo: null,
     failedSkills: [],
+    orientationLoop: null,
   };
 
   // Ids dos `tool_use` do Agent tool. Sem isto, qualquer `tool_result` que
@@ -84,6 +93,27 @@ export function createStreamRenderer({ onEvent } = {}) {
   // rastro no resumo. Só o `tool_result` sabe que falhou; só o `tool_use`
   // sabe qual skill era.
   const skillCalls = new Map();
+
+  // Quantas vezes a Orientação pediu cada `tool_use` (issue #74). A chave é a
+  // ferramenta mais o input inteiro: o laço do Provedor local repete a chamada
+  // idêntica, e é isso que o distingue da Orientação que lê muita coisa.
+  //
+  // Contagem acumulada, não consecutiva: a iteração das 20:03 de 28/08/2026
+  // alternava as issues 18, 19 e 20 em ciclo de período 3 — nenhuma repetição
+  // era consecutiva, e ninguém saía do lugar do mesmo jeito.
+  const orientationTools = new Map();
+
+  function countOrientationTool(block, detail) {
+    const key = `${block.name}
+${JSON.stringify(block.input ?? {})}`;
+    const count = (orientationTools.get(key) ?? 0) + 1;
+    orientationTools.set(key, count);
+    // O pior comando responde pela iteração: reportar o primeiro a estourar
+    // esconderia o que de fato dominou o laço.
+    if (count >= ORIENTATION_LOOP_LIMIT && count > (state.orientationLoop?.count ?? 0)) {
+      state.orientationLoop = { tool: block.name, detail, count };
+    }
+  }
 
   function handle(evt) {
     onEvent?.(evt);
@@ -140,6 +170,7 @@ export function createStreamRenderer({ onEvent } = {}) {
               skillCalls.set(block.id, block.input.skill);
             }
             const detail = describeTool(block.name, block.input);
+            if (evt.subagent_type === "orientation") countOrientationTool(block, detail);
             process.stdout.write(
               `${paint(C.cyan, "⚙")} ${paint(C.bold, block.name)}${detail ? paint(C.dim, "  " + detail) : ""}\n`
             );
@@ -352,3 +383,15 @@ export function formatCostByModel(totalCost, modelTotals, { billed = true, fallb
 }
 
 export { C as colors, paint };
+
+/**
+ * Puro: a linha que o operador lê quando a Orientação travou em laço. Diz o
+ * comando, porque é ele que identifica onde o modelo parou de decidir — nas
+ * quatro iterações da #74 era sempre um `gh issue view` reconsultando o estado
+ * de um ticket que a Orientação já tinha lido.
+ */
+export function formatOrientationLoop(loop) {
+  if (!loop) return "";
+  const detail = loop.detail ? ` (${loop.detail})` : "";
+  return `a Orientação repetiu ${loop.count}x o mesmo ${loop.tool}${detail} — laço fechado`;
+}

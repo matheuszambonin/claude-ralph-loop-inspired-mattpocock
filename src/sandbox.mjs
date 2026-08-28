@@ -260,7 +260,7 @@ export function runAgentInteractive(name, agentArgs = []) {
  * `allowHostLoopback`: é por onde o teste do teto prova que o processo
  * morre, sem precisar de um Docker de verdade para travar de propósito.
  */
-export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [], env = {}, timeoutMs = 0, onChunk, spawnImpl = spawn }) {
+export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [], env = {}, timeoutMs = 0, onChunk, abortWhen, spawnImpl = spawn }) {
   const claudeArgs = [
     "claude",
     "--print",
@@ -278,6 +278,7 @@ export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [
     const child = spawnImpl("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     let timedOut = false;
+    let aborted = false;
     let timer = null;
     let settled = false;
 
@@ -295,7 +296,7 @@ export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [
       child.stdout?.destroy();
       child.stderr?.destroy();
       child.unref?.();
-      resolve({ code, stderr, timedOut });
+      resolve({ code, stderr, timedOut, aborted });
     };
 
     if (timeoutMs > 0) {
@@ -306,7 +307,17 @@ export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [
       }, timeoutMs);
     }
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => onChunk(chunk));
+    child.stdout.on("data", (chunk) => {
+      onChunk(chunk);
+      // Depois do chunk, nunca antes: quem decide o corte lê o estado que este
+      // mesmo chunk acabou de alimentar (issue #74). Mata pelo caminho do teto
+      // de tempo — o `claude` do container ainda precisa do `killClaudeInSandbox`
+      // de quem chamou, e é por isso que o resultado diz qual dos dois cortou.
+      if (settled || !abortWhen?.()) return;
+      aborted = true;
+      child.kill();
+      settle(1);
+    });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
