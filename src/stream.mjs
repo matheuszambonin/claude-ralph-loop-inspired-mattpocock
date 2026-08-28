@@ -65,6 +65,8 @@ export function createStreamRenderer({ onEvent } = {}) {
     modelUsage: null,
     subagentTokens: 0,
     orientationCalls: 0,
+    orientationSummaries: 0,
+    orientationDelegatedTo: null,
     failedSkills: [],
   };
 
@@ -72,6 +74,10 @@ export function createStreamRenderer({ onEvent } = {}) {
   // por acaso contenha o texto `subagent_tokens:` — a saída de um grep sobre
   // os próprios logs do Ralph, por exemplo — entrava na conta.
   const subagentCalls = new Set();
+
+  // Ids das delegações síncronas ao subagente `orientation`: só o
+  // `tool_result` delas pode trazer o resumo de orientação (issue #66).
+  const orientationCallIds = new Set();
 
   // Id do `tool_use` da Skill -> nome pedido. A #72: o agente chamou a Skill
   // com o nome pelado, o harness recusou, e o passo do prompt sumiu sem
@@ -111,7 +117,25 @@ export function createStreamRenderer({ onEvent } = {}) {
               // nome de `orientation.mjs` arrastaria Docker e fs para cá.
               // Conta o `tool_use`, não a execução: o teto do ADR-0004 proíbe
               // pedir a Orientação de novo, mesmo que a primeira tenha falhado.
-              if (block.input?.subagent_type === "orientation") state.orientationCalls += 1;
+              //
+              // A quem a Orientação foi delegada (issue #66): a chamada a
+              // `orientation` vence de qualquer ponto da iteração, e só na
+              // falta dela a primeira delegação responde pelo passo 1. Sem a
+              // primeira regra, o `Explore` que o Claude Code dispara sozinho
+              // antes do passo 1 levaria a culpa; sem a segunda, a delegação
+              // que trocou o `subagent_type` não teria quem a nomeasse.
+              const subagentType = block.input?.subagent_type;
+              if (subagentType === "orientation") {
+                state.orientationDelegatedTo = "orientation";
+                state.orientationCalls += 1;
+                // `run_in_background: true` devolve "Async agent launched
+                // successfully" no lugar do resumo (issue #65), e o recibo
+                // volta sem erro. Contá-lo calaria o aviso justamente na
+                // regressão que a #65 acabou de consertar.
+                if (block.input?.run_in_background !== true) orientationCallIds.add(block.id);
+              } else if (state.orientationDelegatedTo === null && typeof subagentType === "string") {
+                state.orientationDelegatedTo = subagentType;
+              }
             } else if (block.name === "Skill" && typeof block.input?.skill === "string") {
               skillCalls.set(block.id, block.input.skill);
             }
@@ -147,6 +171,14 @@ export function createStreamRenderer({ onEvent } = {}) {
             // que é justamente o erro da #72, então comparar pelo sufixo é o
             // que reconhece o acerto.
             if (skill) state.failedSkills = state.failedSkills.filter((f) => baseSkillName(f) !== baseSkillName(skill));
+          }
+          // Resumo é o `tool_result` sem erro que traz a linha `STATUS:` do
+          // contrato de `prompts/orientation.md`. A delegação que reprovou na
+          // validação, e a que voltou com "hit an output limit" no lugar do
+          // resumo (a iteração das 14:42 de 28/08/2026, na issue #66), não
+          // orientaram ninguém — e a segunda volta sem `is_error`.
+          if (orientationCallIds.has(block.tool_use_id) && !block.is_error && /^STATUS:/m.test(body)) {
+            state.orientationSummaries += 1;
           }
           if (subagentCalls.has(block.tool_use_id)) {
             const tokens = parseSubagentTokens(body);
@@ -236,6 +268,31 @@ function shortModelName(canonicalModel) {
 export function formatOrientationWarning(orientationCalls) {
   if (orientationCalls <= 1) return "";
   return `⚠ ${orientationCalls} orientações nesta iteração — o teto é uma (ADR-0004)`;
+}
+
+/**
+ * A iteração que não recebeu resumo de orientação nenhum orientou-se sozinha,
+ * e o resumo dela fechava verde sobre isso (issue #66). Duas iterações reais
+ * contra `ornith:9b` em 28/08/2026, dois avisos:
+ *
+ * - 14:12 — delegou para `orientation`, o resumo nunca voltou, e o contexto
+ *   principal releu o issue tracker, dois ADRs e três arquivos. É o custo que
+ *   o ADR-0004 existe para não pagar.
+ * - 14:42 — a delegação saiu com `subagent_type: "general-purpose"`. Some a
+ *   whitelist que segura "quem orienta não escreve" e some o
+ *   `orientationModel` do config; o Ralph injeta o agente por `--agents` e
+ *   não percebia que ele foi descartado.
+ *
+ * Exclusivos de propósito: quem leu o segundo já sabe que o primeiro vale, e
+ * duas linhas amarelas para um desvio só é ruído. Resumo na mão devolve string
+ * vazia — iteração saudável não ganha linha nenhuma.
+ */
+export function formatOrientationMissWarning(orientationSummaries, delegatedTo) {
+  if (orientationSummaries > 0) return "";
+  if (delegatedTo && delegatedTo !== "orientation") {
+    return `⚠ a Orientação foi delegada a '${delegatedTo}', não a orientation — sem a whitelist do ADR-0004 e com o orientationModel do config ignorado`;
+  }
+  return "⚠ nenhum resumo de orientação chegou do subagente — a Orientação rodou no contexto principal (ADR-0004)";
 }
 
 /** `mattpocock-skills:code-review` e `code-review` são a mesma skill pedida de dois jeitos. */

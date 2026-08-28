@@ -10,7 +10,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -23,7 +23,7 @@ import {
   readTargetMcpConfig,
   resolveEmbeddingEnv,
 } from "./knowledge-index.mjs";
-import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
+import { buildOrientationPrompt, buildOrientationAgent, delegatesOrientation } from "./orientation.mjs";
 import { ensurePromptFresh, describeDrift } from "./prompts.mjs";
 import {
   resolve as resolveProvider,
@@ -231,6 +231,28 @@ function warnIfOrientationCeilingExceeded(state) {
 }
 
 /**
+ * O teto acima cobra a Orientação que rodou demais; este cobra a que não
+ * rodou onde devia (issue #66). Amarelo pelo mesmo motivo: a iteração
+ * entregou o ticket, só pagou o contexto que o ADR-0004 queria poupar.
+ *
+ * Dois cortes antes de acusar. O prompt que nunca prometeu delegação
+ * (`entropy.md`, `test-coverage.md`) não deve nenhuma, e o Teto da iteração
+ * não prova nada — o resumo de orientação pode estar justamente no turno que
+ * a morte comeu, e chamar isso de "rodou no contexto principal" seria
+ * inventar. É o oposto do que a issue #44 decidiu para o teto de invocações,
+ * e de propósito: lá o sinal é uma chamada que existe, aqui é uma que falta.
+ */
+function warnIfOrientationMissed(state, cfg, prompt, timedOut) {
+  if (timedOut || !delegatesOrientation(prompt)) return;
+  const warning = formatOrientationMissWarning(state.orientationSummaries, state.orientationDelegatedTo);
+  if (!warning) return;
+  process.stdout.write(
+    paint(C.yellow, `\n  ${warning}\n`) +
+      paint(C.dim, `    o passo 1 de ${cfg.promptFile} é quem pede a delegação; o log da iteração mostra a chamada que saiu.\n`)
+  );
+}
+
+/**
  * `warnIfSkillMissing` pega a skill que nunca carregou na sessão; esta pega a
  * que carregou e foi recusada na hora da chamada (issue #72) — o agente segue
  * em frente e o commit sai sem a revisão que o passo pedia. Amarelo pelo mesmo
@@ -358,6 +380,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   warnIfSkillMissing(state, cfg);
   warnIfIndexMcpFailed(state, detected);
   warnIfOrientationCeilingExceeded(state);
+  warnIfOrientationMissed(state, cfg, prompt, timedOut);
   warnIfSkillCallFailed(state, cfg);
   await warnIfAuthFailed(state, cfg);
 

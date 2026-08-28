@@ -6,6 +6,7 @@ import {
   formatCostByModel,
   formatOrientationWarning,
   formatSkillFailureWarning,
+  formatOrientationMissWarning,
 } from "../src/stream.mjs";
 
 function feed(renderer, evt) {
@@ -329,4 +330,122 @@ test("createStreamRenderer: acerto em outra skill não apaga a que ficou por faz
   });
   const state = renderer.end();
   assert.deepEqual(state.failedSkills, ["code-review"]);
+});
+
+/** O resumo de orientação como `prompts/orientation.md` manda devolvê-lo. */
+const SUMMARY = "STATUS: ready\nTICKET: #66 o relatório da iteração\nWHY: primeiro da frente\nCONTEXT: - src/stream.mjs";
+
+function delegation(id, input) {
+  return { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id, name: "Task", input }] } };
+}
+
+function toolResult(id, extra = {}) {
+  return { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, ...extra }] } };
+}
+
+test("createStreamRenderer: o resumo que volta do subagente orientation é contado (issue #66)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { description: "orient", subagent_type: "orientation", run_in_background: false }));
+  feed(renderer, toolResult("toolu_1", { content: [{ type: "text", text: SUMMARY }] }));
+  const state = renderer.end();
+  assert.equal(state.orientationSummaries, 1);
+  assert.equal(state.orientationDelegatedTo, "orientation");
+});
+
+test("createStreamRenderer: delegação que volta com erro não conta como resumo", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { subagent_type: "orientation" }));
+  feed(renderer, toolResult("toolu_1", { is_error: true, content: "InputValidationError: description is required" }));
+  const state = renderer.end();
+  assert.equal(state.orientationSummaries, 0);
+});
+
+test("createStreamRenderer: prosa fora do contrato não conta como resumo (issue #66)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { subagent_type: "orientation", run_in_background: false }));
+  // A iteração das 14:42: o subagente estourou o orçamento de saída e voltou
+  // sem `is_error`, então "sem erro" sozinho contaria isto como resumo.
+  feed(renderer, toolResult("toolu_1", { content: [{ type: "text", text: "The orientation agent hit an output limit." }] }));
+  const state = renderer.end();
+  assert.equal(state.orientationSummaries, 0);
+});
+
+test("createStreamRenderer: recibo de lançamento não conta como resumo (issue #65 dentro da #66)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { subagent_type: "orientation", run_in_background: true }));
+  feed(renderer, toolResult("toolu_1", { content: "Async agent launched successfully." }));
+  const state = renderer.end();
+  assert.equal(state.orientationSummaries, 0);
+  assert.equal(state.orientationDelegatedTo, "orientation");
+});
+
+test("createStreamRenderer: a delegação a orientation vence a que veio antes dela", () => {
+  const renderer = createStreamRenderer();
+  // O Claude Code dispara subagente por conta própria; se ele vier antes do
+  // passo 1, quem responde pela Orientação continua sendo a chamada certa.
+  feed(renderer, delegation("toolu_1", { description: "explora", subagent_type: "Explore" }));
+  feed(renderer, delegation("toolu_2", { description: "orient", subagent_type: "orientation" }));
+  const state = renderer.end();
+  assert.equal(state.orientationDelegatedTo, "orientation");
+});
+
+test("createStreamRenderer: sem delegação a orientation, a primeira da iteração responde por ela", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { description: "orient", subagent_type: "general-purpose" }));
+  feed(renderer, delegation("toolu_2", { description: "explora", subagent_type: "Explore" }));
+  const state = renderer.end();
+  assert.equal(state.orientationDelegatedTo, "general-purpose");
+});
+
+test("createStreamRenderer: sem delegação nenhuma, orientationDelegatedTo fica null", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "gh issue list" } }] },
+  });
+  const state = renderer.end();
+  assert.equal(state.orientationDelegatedTo, null);
+  assert.equal(state.orientationSummaries, 0);
+});
+
+test("formatOrientationMissWarning: iteração saudável não ganha linha nenhuma", () => {
+  assert.equal(formatOrientationMissWarning(1, "orientation"), "");
+  // O Claude Code delega por conta própria depois da Orientação; o resumo já
+  // chegou, então nada disso vira aviso.
+  assert.equal(formatOrientationMissWarning(1, "general-purpose"), "");
+});
+
+test("formatOrientationMissWarning: sem resumo nenhum, nomeia o contexto principal", () => {
+  const line = formatOrientationMissWarning(0, "orientation");
+  assert.match(line, /contexto principal/);
+  assert.match(line, /ADR-0004/);
+  assert.equal(formatOrientationMissWarning(0, null), line);
+});
+
+test("formatOrientationMissWarning: subagent_type errado nomeia o agente e o orientationModel ignorado", () => {
+  const line = formatOrientationMissWarning(0, "general-purpose");
+  assert.match(line, /general-purpose/);
+  assert.match(line, /ADR-0004/);
+  assert.match(line, /orientationModel/);
+});
+
+test("createStreamRenderer + formatOrientationMissWarning: a iteração das 14:42 vira aviso (issue #66)", () => {
+  const renderer = createStreamRenderer();
+  // A chamada sem `description` reprova, a repetição põe `description` e perde
+  // o `subagent_type: "orientation"` — foi como `general-purpose` que rodou.
+  feed(renderer, delegation("toolu_1", { subagent_type: "general-purpose", description: "orient" }));
+  feed(renderer, toolResult("toolu_1", { content: [{ type: "text", text: "hit an output limit" }] }));
+  feed(renderer, { type: "result", subtype: "success", total_cost_usd: 0.5, num_turns: 40 });
+  const state = renderer.end();
+  assert.match(formatOrientationMissWarning(state.orientationSummaries, state.orientationDelegatedTo), /general-purpose/);
+});
+
+test("createStreamRenderer + formatOrientationMissWarning: a iteração das 14:12 vira aviso (issue #66)", () => {
+  const renderer = createStreamRenderer();
+  // Delegou certo, o resumo nunca voltou, e o principal orientou sozinho.
+  feed(renderer, delegation("toolu_1", { subagent_type: "orientation", description: "orient" }));
+  feed(renderer, toolResult("toolu_1", { is_error: true, content: "timed out after 120s" }));
+  feed(renderer, { type: "result", subtype: "success", total_cost_usd: 2.9, num_turns: 118 });
+  const state = renderer.end();
+  assert.match(formatOrientationMissWarning(state.orientationSummaries, state.orientationDelegatedTo), /contexto principal/);
 });

@@ -9,6 +9,7 @@ import {
   buildOrientationPrompt,
   readOrientationTemplate,
   checkOrientationContract,
+  delegatesOrientation,
 } from "../src/orientation.mjs";
 import { ralphHome } from "../src/paths.mjs";
 
@@ -185,4 +186,16 @@ test("checkOrientationContract: os dois prompts distribuídos com a ferramenta b
   const result = checkOrientationContract(iterationPrompt, orientationTemplate);
   assert.equal(result.applicable, true);
   assert.equal(result.ok, true, result.issues.join("; "));
+});
+
+test("delegatesOrientation: separa o prompt que delega do que orienta inline (ADR-0009)", () => {
+  assert.equal(delegatesOrientation('Call the `Task` tool with `subagent_type: "orientation"`.'), true);
+  // `entropy.md` e `test-coverage.md` não delegam e são legítimos: sem este
+  // corte, o aviso da issue #66 tocaria em toda iteração deles.
+  assert.equal(delegatesOrientation("Pick the noisiest module and clean it up."), false);
+});
+
+test("delegatesOrientation: o implement.md distribuído delega", () => {
+  const implement = readFileSync(path.join(ralphHome(), "prompts", "implement.md"), "utf8");
+  assert.equal(delegatesOrientation(implement), true);
 });
