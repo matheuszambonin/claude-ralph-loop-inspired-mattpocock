@@ -1,6 +1,8 @@
-# Estado de execução do próprio Ralph, quando ele roda sobre si mesmo
-.ralph/logs/
-.ralph/PROGRESS.md
+# Estado de execução do próprio Ralph, quando ele roda sobre si mesmo. O
+# diretório inteiro: `ralph init` também gera config.json, prompt.md e setup.sh
+# aqui, e esses são da máquina que roda o loop, não do projeto — a fonte deles
+# mora em templates/.
+.ralph/
 
 # Node
 node_modules/
