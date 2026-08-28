@@ -67,7 +67,8 @@ if a check is genuinely wrong, say so in your progress entry and leave it red.
 ## 5. Review
 
 Run `/mattpocock-skills:code-review` over your own diff and act on what it
-finds before committing.
+finds before committing. Use the full plugin-qualified name — bare
+`code-review` is a different, user-only skill and the call will be refused.
 
 ## 6. Record what happened
 
