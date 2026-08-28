@@ -5,6 +5,7 @@ import {
   accumulateModelUsage,
   formatCostByModel,
   formatOrientationWarning,
+  formatSkillFailureWarning,
 } from "../src/stream.mjs";
 
 function feed(renderer, evt) {
@@ -215,4 +216,117 @@ test("formatCostByModel: sem custo total, a quebra por modelo vira o total", () 
   assert.match(line, /\$1\.2800/);
   assert.match(line, /sonnet \$1\.2000/);
   assert.match(line, /haiku \$0\.0800/);
+});
+
+test("createStreamRenderer: registra a skill cuja chamada voltou com erro (issue #72)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Skill", input: { skill: "code-review" } }] },
+  });
+  feed(renderer, {
+    type: "user",
+    message: {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: "Skill code-review cannot be used with Skill tool due to disable-model-invocation" }],
+    },
+  });
+  const state = renderer.end();
+  assert.deepEqual(state.failedSkills, ["code-review"]);
+});
+
+test("createStreamRenderer: skill que rodou não entra na lista, nem erro de outra tool", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "toolu_1", name: "Skill", input: { skill: "mattpocock-skills:code-review" } },
+        { type: "tool_use", id: "toolu_2", name: "Bash", input: { command: "git status" } },
+      ],
+    },
+  });
+  feed(renderer, {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "toolu_1", content: "ok" },
+        { type: "tool_result", tool_use_id: "toolu_2", is_error: true, content: "fatal: not a git repository" },
+      ],
+    },
+  });
+  const state = renderer.end();
+  assert.deepEqual(state.failedSkills, []);
+});
+
+test("createStreamRenderer: a mesma skill falhando duas vezes vira uma linha só", () => {
+  const renderer = createStreamRenderer();
+  for (const id of ["toolu_1", "toolu_2"]) {
+    feed(renderer, {
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "tool_use", id, name: "Skill", input: { skill: "code-review" } }] },
+    });
+    feed(renderer, {
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: "disable-model-invocation" }] },
+    });
+  }
+  const state = renderer.end();
+  assert.deepEqual(state.failedSkills, ["code-review"]);
+});
+
+test("formatSkillFailureWarning: sem falha, silêncio", () => {
+  assert.equal(formatSkillFailureWarning([]), "");
+});
+
+test("formatSkillFailureWarning: nomeia a skill que falhou e diz que o passo não rodou", () => {
+  const line = formatSkillFailureWarning(["code-review"]);
+  assert.match(line, /code-review/);
+  assert.match(line, /não rodou/);
+});
+
+test("createStreamRenderer: falha seguida do acerto com o nome qualificado não vira aviso (issue #72)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Skill", input: { skill: "code-review" } }] },
+  });
+  feed(renderer, {
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: "disable-model-invocation" }] },
+  });
+  feed(renderer, {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_2", name: "Skill", input: { skill: "mattpocock-skills:code-review" } }] },
+  });
+  feed(renderer, {
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_2", content: "Launching skill" }] },
+  });
+  const state = renderer.end();
+  assert.deepEqual(state.failedSkills, []);
+});
+
+test("createStreamRenderer: acerto em outra skill não apaga a que ficou por fazer", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Skill", input: { skill: "code-review" } }] },
+  });
+  feed(renderer, {
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", is_error: true, content: "disable-model-invocation" }] },
+  });
+  feed(renderer, {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "toolu_2", name: "Skill", input: { skill: "mattpocock-skills:tdd" } }] },
+  });
+  feed(renderer, {
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_2", content: "Launching skill" }] },
+  });
+  const state = renderer.end();
+  assert.deepEqual(state.failedSkills, ["code-review"]);
 });

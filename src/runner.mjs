@@ -9,7 +9,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -230,6 +230,22 @@ function warnIfOrientationCeilingExceeded(state) {
 }
 
 /**
+ * `warnIfSkillMissing` pega a skill que nunca carregou na sessão; esta pega a
+ * que carregou e foi recusada na hora da chamada (issue #72) — o agente segue
+ * em frente e o commit sai sem a revisão que o passo pedia. Amarelo pelo mesmo
+ * motivo do teto: o passo perdido não invalida o resto da iteração, e derrubar
+ * um `ralph afk` por isso custa mais do que o aviso na manhã seguinte.
+ */
+function warnIfSkillCallFailed(state, cfg) {
+  const warning = formatSkillFailureWarning(state.failedSkills);
+  if (!warning) return;
+  process.stdout.write(
+    paint(C.yellow, `\n  ${warning}\n`) +
+      paint(C.dim, `    veja como ${cfg.promptFile} pede a skill, e o log da iteração para o erro exato.\n`)
+  );
+}
+
+/**
  * Aquecer o Provedor local antes da iteração 1 não é falha alta (issue #34,
  * diferente das três provas de `probeProviderBoth`) — a primeira iteração
  * carrega o modelo sozinha, só mais devagar, então isto só avisa.
@@ -308,6 +324,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   warnIfSkillMissing(state, cfg);
   warnIfIndexMcpFailed(state, detected);
   warnIfOrientationCeilingExceeded(state);
+  warnIfSkillCallFailed(state, cfg);
   await warnIfAuthFailed(state, cfg);
 
   if (code !== 0 && !state.finalResult) {

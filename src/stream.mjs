@@ -65,12 +65,19 @@ export function createStreamRenderer({ onEvent } = {}) {
     modelUsage: null,
     subagentTokens: 0,
     orientationCalls: 0,
+    failedSkills: [],
   };
 
   // Ids dos `tool_use` do Agent tool. Sem isto, qualquer `tool_result` que
   // por acaso contenha o texto `subagent_tokens:` — a saída de um grep sobre
   // os próprios logs do Ralph, por exemplo — entrava na conta.
   const subagentCalls = new Set();
+
+  // Id do `tool_use` da Skill -> nome pedido. A #72: o agente chamou a Skill
+  // com o nome pelado, o harness recusou, e o passo do prompt sumiu sem
+  // rastro no resumo. Só o `tool_result` sabe que falhou; só o `tool_use`
+  // sabe qual skill era.
+  const skillCalls = new Map();
 
   function handle(evt) {
     onEvent?.(evt);
@@ -105,6 +112,8 @@ export function createStreamRenderer({ onEvent } = {}) {
               // Conta o `tool_use`, não a execução: o teto do ADR-0004 proíbe
               // pedir a Orientação de novo, mesmo que a primeira tenha falhado.
               if (block.input?.subagent_type === "orientation") state.orientationCalls += 1;
+            } else if (block.name === "Skill" && typeof block.input?.skill === "string") {
+              skillCalls.set(block.id, block.input.skill);
             }
             const detail = describeTool(block.name, block.input);
             process.stdout.write(
@@ -126,6 +135,18 @@ export function createStreamRenderer({ onEvent } = {}) {
             : (block.content ?? []).map((c) => c.text ?? "").join(" ");
           if (block.is_error) {
             process.stdout.write(paint(C.red, `  ✗ ${body.split("\n")[0].slice(0, 160)}\n`));
+            const skill = skillCalls.get(block.tool_use_id);
+            // Uma linha por skill: retentar a mesma skill e falhar de novo é
+            // um passo perdido, não dois.
+            if (skill && !state.failedSkills.includes(skill)) state.failedSkills.push(skill);
+          } else {
+            const skill = skillCalls.get(block.tool_use_id);
+            // O agente que erra o nome e acerta na segunda contornou sozinho —
+            // o passo rodou, e avisar aqui seria mentira. O nome pelado é o
+            // sufixo do qualificado (`code-review` em `plugin:code-review`),
+            // que é justamente o erro da #72, então comparar pelo sufixo é o
+            // que reconhece o acerto.
+            if (skill) state.failedSkills = state.failedSkills.filter((f) => baseSkillName(f) !== baseSkillName(skill));
           }
           if (subagentCalls.has(block.tool_use_id)) {
             const tokens = parseSubagentTokens(body);
@@ -215,6 +236,24 @@ function shortModelName(canonicalModel) {
 export function formatOrientationWarning(orientationCalls) {
   if (orientationCalls <= 1) return "";
   return `⚠ ${orientationCalls} orientações nesta iteração — o teto é uma (ADR-0004)`;
+}
+
+/** `mattpocock-skills:code-review` e `code-review` são a mesma skill pedida de dois jeitos. */
+function baseSkillName(skill) {
+  return skill.slice(skill.lastIndexOf(":") + 1);
+}
+
+/**
+ * A tool que falha e o agente contorna sozinho é rotina; a Skill que falha
+ * não tem contorno — o passo do prompt que dependia dela simplesmente não
+ * aconteceu, e o commit sai como se tivesse acontecido (issue #72). Por isso
+ * só a Skill vira aviso, e não a contagem geral de `tool_result` com erro:
+ * 43 iterações de log real deram 59 erros de tool, nenhum deles de Skill —
+ * o contador geral tocaria em toda iteração sem dizer nada.
+ */
+export function formatSkillFailureWarning(failedSkills) {
+  if (!failedSkills?.length) return "";
+  return `⚠ a tool Skill falhou: ${failedSkills.join(", ")} — o passo do prompt que dependia dela não rodou`;
 }
 
 /**
