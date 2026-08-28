@@ -330,8 +330,15 @@ export function accumulateModelUsage(totals, modelUsage) {
 /**
  * `$X` com um modelo só — idêntico ao relatório de antes desta feature —
  * ou `$X (modelo $Y · modelo $Z)` com mais de um. Pura.
+ *
+ * `billed: false` é o Provedor que não cobra, e aí nem se olha o total: o CLI
+ * reporta `total_cost_usd` mesmo com o Ollama, porque marca `provider:
+ * "firstParty"` no `modelUsage` e aplica a tabela de preço da Anthropic sobre
+ * tokens locais. Foi assim que uma noite contra `ornith:9b` fechou em
+ * US$ 115,83 sem uma inferência ter saído da máquina (issue #68).
  */
-export function formatCostByModel(totalCost, modelTotals, fallback = "—") {
+export function formatCostByModel(totalCost, modelTotals, { billed = true, fallback = "—" } = {}) {
+  if (!billed) return fallback;
   const models = Object.keys(modelTotals ?? {});
   // `result` pode trazer `modelUsage` e não trazer `total_cost_usd`. Jogar a
   // quebra fora nesse caso é o desperdício que a issue #9 veio consertar:

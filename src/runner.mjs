@@ -471,11 +471,14 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
     `\n${paint(C.bold, "Ralph")} ${paint(C.dim, `· ${path.basename(root)} · branch ${branch ?? "—"} · modelo ${provider.model}${providerSuffix} · até ${iterations} iterações`)}\n`
   );
 
-  // Provedor local não reporta `total_cost_usd` — "sem custo" e "custo não
-  // reportado" significam coisas opostas para quem lê o resumo depois
-  // (ADR-0008), então o fallback muda com o Provedor, não só o texto do
-  // cabeçalho.
-  const costFallback = provider.kind === "local" ? `sem custo — Provedor local (${provider.model})` : "custo não reportado";
+  // "Sem custo" e "custo não reportado" significam coisas opostas para quem lê
+  // o resumo depois (ADR-0008), então o texto muda com o Provedor, não só o do
+  // cabeçalho. Quem sabe que o Provedor não cobra é quem o escolheu: o total
+  // reportado é ficção e nem chega a ser comparado (issue #68).
+  const costing =
+    provider.kind === "local"
+      ? { billed: false, fallback: `sem custo — Provedor local (${provider.model})` }
+      : { billed: true, fallback: "custo não reportado" };
 
   const started = Date.now();
   let cost = 0;
@@ -489,11 +492,11 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
 
     if (result.complete) {
       process.stdout.write(paint(C.green, `\n✓ backlog concluído na iteração ${i}.\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "complete", costFallback);
+      return summary(i, cost, modelTotals, subagentTokens, started, "complete", costing);
     }
     if (result.blocked) {
       process.stdout.write(paint(C.yellow, `\n■ Ralph travou na iteração ${i} e pediu um humano.\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "blocked", costFallback);
+      return summary(i, cost, modelTotals, subagentTokens, started, "blocked", costing);
     }
     if (result.code !== 0) {
       // Estouro do teto para o loop pelo mesmo caminho de qualquer iteração
@@ -501,28 +504,27 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
       // largar a próxima iteração nela é como o AFK queima uma noite inteira.
       if (result.timedOut) reportIterationTimeout(root, cfg, result, i);
       else process.stdout.write(paint(C.red, `\n✗ iteração ${i} falhou. Log: ${path.relative(root, result.logPath)}\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "error", costFallback);
+      return summary(i, cost, modelTotals, subagentTokens, started, "error", costing);
     }
     if (cfg.cooldownSeconds > 0 && i < iterations) {
       await new Promise((r) => setTimeout(r, cfg.cooldownSeconds * 1000));
     }
   }
   process.stdout.write(paint(C.yellow, `\n⏱ teto de ${iterations} iterações atingido sem a promise.\n`));
-  return summary(iterations, cost, modelTotals, subagentTokens, started, "max-iterations", costFallback);
+  return summary(iterations, cost, modelTotals, subagentTokens, started, "max-iterations", costing);
 }
 
 /**
  * `subagentTokens` só aparece na linha quando > 0 — repositório sem
  * subagente nenhum (a maioria dos logs, hoje) mantém o relatório idêntico
- * ao de antes da issue #9. `costFallback` (issue #31) é "custo não
- * reportado" por padrão — o texto de sempre para quem não passa `--night`.
+ * ao de antes da issue #9. `costing` (issues #31 e #68) diz se o Provedor
+ * cobra e com que texto o resumo sai quando não há custo.
  */
-function summary(iterations, cost, modelTotals, subagentTokens, started, status, costFallback = "custo não reportado") {
+function summary(iterations, cost, modelTotals, subagentTokens, started, status, costing) {
   const mins = ((Date.now() - started) / 60000).toFixed(1);
   const subagent = subagentTokens ? ` · subagentes ${subagentTokens} tokens` : "";
-  process.stdout.write(
-    paint(C.dim, `  ${iterations} iterações · ${mins} min · ${formatCostByModel(cost, modelTotals, costFallback)}${subagent}\n`)
-  );
+  const costLine = formatCostByModel(cost, modelTotals, costing);
+  process.stdout.write(paint(C.dim, `  ${iterations} iterações · ${mins} min · ${costLine}${subagent}\n`));
   return { status, iterations, cost };
 }
 

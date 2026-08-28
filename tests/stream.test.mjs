@@ -132,7 +132,13 @@ test("formatCostByModel: dois modelos produzem a linha com os dois", () => {
 });
 
 test("formatCostByModel: custo não reportado usa o fallback", () => {
-  assert.equal(formatCostByModel(0, {}, "custo não reportado"), "custo não reportado");
+  assert.equal(formatCostByModel(0, {}, { fallback: "custo não reportado" }), "custo não reportado");
+});
+
+test("formatCostByModel: Provedor que não cobra usa o fallback mesmo com total reportado", () => {
+  const costing = { billed: false, fallback: "sem custo — Provedor local (ornith:9b)" };
+  const line = formatCostByModel(48.77, { "ornith:9b": 48.77 }, costing);
+  assert.equal(line, "sem custo — Provedor local (ornith:9b)");
 });
 
 test("createStreamRenderer: subagent_tokens na saída de um Bash não entra na conta", () => {
