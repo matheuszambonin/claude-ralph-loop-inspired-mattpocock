@@ -7,9 +7,20 @@ you finish. Work on exactly ONE ticket, then stop.
 
 ## 1. Orient — delegate it
 
-Use the Agent tool with `subagent_type: "orientation"` to figure out which
-ticket to work on. It reads the issue tracker, `{{PROGRESS_FILE}}` and the
-project's docs, and reports back in this shape:
+Call the `Task` tool once, with all four of these:
+
+- `description: "orient"`
+- `subagent_type: "orientation"`
+- `run_in_background: false`
+- `prompt: "Pick the ticket for this iteration and report back."`
+
+`run_in_background: false` is what makes the report arrive as the result of
+this call; without it the tool only launches the subagent and hands you a
+receipt. The call is rejected without `description`. `TaskCreate`, `TaskUpdate`
+and `TaskOutput` are a different, unrelated API — none of them delegates.
+
+The subagent reads the issue tracker, `{{PROGRESS_FILE}}` and the project's
+docs, and reports back in this shape:
 
 ```
 STATUS: ready | complete | blocked

@@ -204,3 +204,21 @@ test("describeDrift: cabeçalho de template que este Ralph não distribui não d
   const { message } = describeDrift(check, ".ralph/prompt.md");
   assert.match(message, /inventado/);
 });
+
+/**
+ * A regressão da issue #65: `implement.md` mandava usar a ferramenta `Agent`,
+ * que o evento `init` da sessão no sandbox não anuncia — ele anuncia `Task` —
+ * e a chamada lançava o subagente em background, devolvendo um recibo no lugar
+ * do relatório. Três rodadas noturnas contra `ornith:9b` terminaram com a
+ * iteração orientando a si mesma, o oposto do que o ADR-0004 compra.
+ */
+test("implement.md: delega pela ferramenta que a sessão anuncia, e delega síncrono", () => {
+  const implement = readIterationTemplates().implement;
+  assert.match(implement, /`Task` tool/);
+  assert.doesNotMatch(implement, /\bAgent tool\b/);
+  // Os dois campos que a chamada de 28/08/2026 perdeu, um em cada rodada: sem
+  // `run_in_background: false` volta o recibo de lançamento, e sem
+  // `description` a chamada reprova com InputValidationError.
+  assert.match(implement, /`run_in_background: false`/);
+  assert.match(implement, /`description: "orient"`/);
+});
