@@ -65,7 +65,8 @@ export const DEFAULTS = {
     // prompt em silêncio e responder com confiança sobre o pedaço que
     // sobrou; baixar este valor é aceitar explicitamente menos contexto.
     minContext: 131072,
-    // teto de cada prova de `/v1/messages` do doctor. Generoso de propósito
+    // teto de cada prova de `/v1/messages` do doctor, e do aquecimento antes
+    // da iteração 1 (issue #60). Generoso de propósito
     // (issue #57): night mode é gastar tempo de máquina ociosa em vez de
     // token pago, e um teto apertado reprovaria um Provedor íntegro pela
     // única dimensão que o conceito declara não medir — velocidade. Quem tem
@@ -98,7 +99,15 @@ export function loadConfig(root) {
   // `model`. Caso especial enquanto for o único (issue #40); generalizar
   // antes de existir um segundo campo assim é preparo para ninguém.
   cfg.nightProvider = { ...DEFAULTS.nightProvider, ...user.nightProvider };
-  assertProbeTimeout(cfg.nightProvider.probeTimeoutSeconds);
+  assertNightNumber("probeTimeoutSeconds", cfg.nightProvider.probeTimeoutSeconds, {
+    max: MAX_PROBE_TIMEOUT_SECONDS,
+    unit: "segundos",
+  });
+  assertNightNumber("minContext", cfg.nightProvider.minContext, {
+    max: MAX_MIN_CONTEXT,
+    unit: "tokens",
+    integer: true,
+  });
   cfg.sandboxName ||= sandboxNameFor(root);
   return cfg;
 }
@@ -110,12 +119,27 @@ export function loadConfig(root) {
 // `"15m"` aqui é o erro provável, não o exótico.
 const MAX_PROBE_TIMEOUT_SECONDS = 4_294_967;
 
-function assertProbeTimeout(seconds) {
-  if (Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_PROBE_TIMEOUT_SECONDS) return;
+// O canário monta um prompt de ~4 caracteres por token declarado
+// (`canaryFiller` em provider.mjs), então um `minContext` absurdo estoura o
+// limite de string do V8 dentro da sonda — a mesma exceção engolida, o mesmo
+// misdiagnóstico sobre o modelo. Dez milhões de tokens é ordens de grandeza
+// acima do que qualquer modelo local aceita e ainda monta sem estourar.
+const MAX_MIN_CONTEXT = 10_000_000;
+
+/**
+ * Guarda de campo numérico do `nightProvider` (issues #57 e #60). Ela existe
+ * porque errar aqui não produz erro de config: produz exceção lá dentro da
+ * sonda, onde as três provas engolem tudo por projeto e o veredito sai como
+ * prescrição sobre o modelo. Daí a mensagem dizer o valor que veio, o que o
+ * campo aceita e a edição que conserta.
+ */
+function assertNightNumber(field, value, { max, unit, integer = false }) {
+  const wellFormed = integer ? Number.isInteger(value) : Number.isFinite(value);
+  if (wellFormed && value > 0 && value <= max) return;
   throw new Error(
-    `.ralph/config.json: nightProvider.probeTimeoutSeconds é ${JSON.stringify(seconds)}, e precisa ser ` +
-      `um número de segundos entre 0 e ${MAX_PROBE_TIMEOUT_SECONDS}. Escreva o número puro, sem unidade ` +
-      `(o padrão é ${DEFAULTS.nightProvider.probeTimeoutSeconds}), ou apague o campo para herdá-lo.`,
+    `.ralph/config.json: nightProvider.${field} é ${JSON.stringify(value)}, e precisa ser ` +
+      `um número de ${unit} entre 0 e ${max}. Escreva o número puro, sem unidade ` +
+      `(o padrão é ${DEFAULTS.nightProvider[field]}), ou apague o campo para herdá-lo.`,
   );
 }
 

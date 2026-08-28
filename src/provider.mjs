@@ -338,13 +338,22 @@ export async function probeBoth(sandboxName, provider, opts = {}) {
  * Nunca lança: falha ao aquecer não é falha alta (diferente das três provas
  * de `probe`) — a primeira iteração carrega o modelo sozinha, só mais devagar.
  * Quem chama decide como avisar.
+ *
+ * O teto é o mesmo `probeTimeoutSeconds` das provas, pelo mesmo cliente
+ * `httpJson` (issue #60). Carregar dezenas de GB pode passar dos 300s que o
+ * `fetch` global impõe, e na máquina que declarou 900s o aviso saía sobre um
+ * aquecimento que ia bem, segundos antes de a iteração 1 rodar contra um
+ * modelo já residente. Ter teto, e não deixá-lo aberto, é o outro lado: um
+ * `preload` sem limite penduraria a iteração 1 e travaria o AFK a noite
+ * inteira, que é pior que um aviso errado.
  */
-export async function preload(provider, { fetchImpl = fetch } = {}) {
+export async function preload(provider, { fetchImpl = httpJson } = {}) {
   try {
     const res = await fetchImpl(joinUrl(provider.baseUrl, "/api/generate"), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: provider.model, keep_alive: provider.keepAlive }),
+      signal: AbortSignal.timeout(Math.round(provider.probeTimeoutSeconds * 1000)),
     });
     return res.ok;
   } catch {
@@ -369,18 +378,58 @@ export function describeAvailability(provider) {
 }
 
 /**
- * Uma prova de contexto que estourou o teto (`contextTimedOut`, issue #56)
- * é reportada como o que é, antes do caso do truncamento: o Provedor pode
- * estar íntegro, e mandar subir `OLLAMA_CONTEXT_LENGTH` ali piora exatamente
- * a lentidão que causou a falha. A ordem alcance → tool_use → timeout →
- * truncamento é o que garante que um Provedor inalcançável nunca receba a
- * prosa da lentidão.
+ * Prosa que o `doctor --night` e o preparo da iteração imprimem **antes** de
+ * bloquear na sonda (issue #58). Nada é medido e nada é decidido aqui: a
+ * sonda continua sendo `probeBoth`, e o veredito continua vindo de
+ * `describeDegradation`.
  *
- * Prosa pro comando que conserta cada uma das três reprovações (CLAUDE.md:
- * "erro de usuário diz o comando que conserta"). Ordem importa: inalcançável
- * já reprova as outras duas em `probe()`, então checar alcance primeiro nunca
- * mostra um conserto de `tool_use`/canário para quem nem chegou lá. Sonda
- * aprovada em tudo devolve `null` — nenhuma linha pro `doctor` pintar.
+ * Ela existe porque a sonda é a operação mais cara que o Ralph faz antes de
+ * qualquer trabalho útil, e desde que o teto virou do operador (issue #57) a
+ * espera pode passar de quinze minutos no padrão. Silêncio longo é
+ * indistinguível de travamento, e o operador que não sabe que está esperando
+ * mata o processo. Daí citar o teto vigente — o valor que o operador
+ * declarou, não o padrão — e não só o fato de estar sondando: quem lê precisa
+ * saber quanto a espera pode durar no pior caso. O teto é por prova, não do
+ * bloqueio inteiro: `postMessages` arma o mesmo `probeTimeoutSeconds` nas duas
+ * provas de inferência, e prometer o número como total mentiria pra quem
+ * cronometra.
+ *
+ * `null` para o Provedor da API paga, mesma convenção de
+ * `describeAvailability`: o modo diurno não ganha linha nova.
+ */
+export function describeProbeStart(provider) {
+  if (provider.kind !== "local") return null;
+  return (
+    `Sondando o Provedor local em ${provider.baseUrl} (modelo ${provider.model}) — ` +
+    `tool_use e canário de contexto, cada prova com teto de ${provider.probeTimeoutSeconds}s.`
+  );
+}
+
+/**
+ * Prosa pro comando que conserta cada reprovação da sonda (CLAUDE.md: "erro
+ * de usuário diz o comando que conserta"). Sonda aprovada em tudo devolve
+ * `null` — nenhuma linha pro `doctor` pintar. A ordem dos ramos é o
+ * comportamento: alcance → timeout → tool_use → truncamento.
+ *
+ * Alcance vem primeiro porque um Provedor inalcançável já reprova as outras
+ * provas dentro de `probe()` — checar alcance antes de tudo nunca mostra um
+ * conserto de `tool_use`/canário para quem nem chegou lá.
+ *
+ * O timeout (`contextTimedOut`, issue #56) vem antes dos dois consertos
+ * caros: o Provedor pode estar íntegro, e mandar subir `OLLAMA_CONTEXT_LENGTH`
+ * piora exatamente a lentidão que causou a falha, enquanto trocar a tag do
+ * modelo custa um `ollama pull` de dezenas de GB por um modelo que estava
+ * correto.
+ *
+ * Que ele venha antes do `tool_use` (issue #59) vale sem a sonda distinguir
+ * qual das pernas estourou, e o argumento é o tamanho dos dois prompts, não
+ * uma medição: o canário é dimensionado por `minContext`, centenas de milhares
+ * de caracteres, contra os ~100 bytes do pedido de `tool_use`. Um teto que a
+ * prova pequena não alcança é um teto que a grande também não alcança, então
+ * `contextTimedOut` deve ser verdadeiro sempre que a perna do `tool_use`
+ * estourou por lentidão. Um Provedor que é lento **e** cujo modelo escreve a
+ * chamada como texto recebe primeiro a prosa do teto, de propósito: na dúvida,
+ * prescrever o conserto barato.
  *
  * `minContext` prescreve o mesmo número que o canário exigiu (issue #42) —
  * quem chama passa `provider.minContext`, o mesmo valor que `probe()` usou
@@ -415,15 +464,9 @@ export function describeDegradation(probeResult, minContext, baseUrl, sandboxNam
     }
     return "Provedor local inalcançável. Rode o Ollama do host com OLLAMA_HOST=0.0.0.0 e reinicie o serviço.";
   }
-  if (!probeResult.toolUse) {
-    return (
-      "Provedor local não emite tool_use estruturado — o modelo escreve a chamada de ferramenta como texto, " +
-      "mesmo anunciando a capacidade. Troque nightProvider.model em .ralph/config.json por um modelo que passe na prova."
-    );
-  }
   if (probeResult.contextTimedOut) {
     return (
-      `Prova de contexto do Provedor local não concluiu em ${probeTimeoutSeconds}s. ` +
+      `Prova do Provedor local não concluiu em ${probeTimeoutSeconds}s. ` +
       "O Provedor respondeu — ele pode estar correto, só lento — e não se sabe se ele trunca o prompt. " +
       "Se essa espera é aceitável, suba nightProvider.probeTimeoutSeconds no .ralph/config.json — o night " +
       "mode existe para gastar tempo de máquina ociosa, não para ser rápido. Os consertos que atacam a " +
@@ -431,6 +474,12 @@ export function describeDegradation(probeResult, minContext, baseUrl, sandboxNam
       "em OLLAMA_CONTEXT_LENGTH no host, que precisam bater porque o Ralph nunca envia num_ctx e quem " +
       "dimensiona o KV cache é a variável do host; ou trocar nightProvider.model por um modelo que caiba " +
       "na GPU — `ollama ps` mostra a divisão CPU/GPU por trás da lentidão."
+    );
+  }
+  if (!probeResult.toolUse) {
+    return (
+      "Provedor local não emite tool_use estruturado — o modelo escreve a chamada de ferramenta como texto, " +
+      "mesmo anunciando a capacidade. Troque nightProvider.model em .ralph/config.json por um modelo que passe na prova."
     );
   }
   if (!probeResult.contextOk) {

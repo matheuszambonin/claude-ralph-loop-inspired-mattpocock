@@ -37,6 +37,7 @@ import {
   resolve as resolveProvider,
   describeAvailability as describeProviderAvailability,
   describeDegradation as describeProviderDegradation,
+  describeProbeStart as describeProviderProbeStart,
   probeBoth as probeProviderBoth,
 } from "./provider.mjs";
 
@@ -266,6 +267,7 @@ async function cmdDoctor(flags) {
   // a mesma coisa. Sem a flag: nenhuma linha nova, nenhuma chamada de rede.
   if (flags.night) {
     const provider = resolveProvider(cfg, { night: true });
+    process.stdout.write(paint(C.dim, `  ${describeProviderProbeStart(provider)}\n`));
     const probeResult = await probeProviderBoth(cfg.sandboxName, provider);
     const degradation = describeProviderDegradation(
       probeResult,

@@ -72,6 +72,43 @@ test("loadConfig: teto acima do que o AbortSignal aceita reprova antes de chegar
   assert.throws(() => loadConfig(root), /probeTimeoutSeconds/);
 });
 
+// Mesmo formato de erro do teto (issue #60), aplicado ao campo vizinho: o
+// bloco tem `keepAlive: "8h"`, então `"128k"` é o erro provável. Sem a guarda,
+// o canário monta o prompt a partir desse valor e estoura dentro da sonda, que
+// engole exceção por prova — e o operador recebe "troque nightProvider.model"
+// por um typo no contexto declarado.
+test("loadConfig: minContext com unidade colada é erro de config, não misdiagnóstico da sonda", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { minContext: "128k" } });
+  assert.throws(() => loadConfig(root), /minContext/);
+});
+
+test("loadConfig: minContext zero ou negativo reprova, e o erro diz o que escrever no lugar", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { minContext: 0 } });
+  assert.throws(() => loadConfig(root), /nightProvider\.minContext é 0/);
+  assert.throws(() => loadConfig(root), /sem unidade|apague o campo/);
+
+  const other = tmpRepo(t);
+  writeConfig(other, { nightProvider: { minContext: -1 } });
+  assert.throws(() => loadConfig(other), /minContext/);
+});
+
+test("loadConfig: minContext que o canário não conseguiria montar reprova antes de chegar na sonda", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { minContext: 1e12 } });
+  assert.throws(() => loadConfig(root), /minContext/);
+});
+
+test("loadConfig: minContext declarado vence o default e não derruba os outros campos", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { minContext: 65536 } });
+  const cfg = loadConfig(root);
+  assert.equal(cfg.nightProvider.minContext, 65536);
+  assert.equal(cfg.nightProvider.model, DEFAULTS.nightProvider.model);
+  assert.equal(cfg.nightProvider.probeTimeoutSeconds, DEFAULTS.nightProvider.probeTimeoutSeconds);
+});
+
 test("loadConfig: config.json que não menciona nightProvider continua válido, sem migração", (t) => {
   const root = tmpRepo(t);
   writeConfig(root, { model: "opus" });

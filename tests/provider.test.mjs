@@ -9,6 +9,7 @@ import {
   probeBoth,
   preload,
   describeAvailability,
+  describeProbeStart,
   describeDegradation,
   httpJson,
 } from "../src/provider.mjs";
@@ -432,6 +433,25 @@ test("preload: fetchImpl que lança (porta fechada) devolve false sem propagar e
   assert.equal(ok, false);
 });
 
+// O aquecimento sai do teto herdado (issue #60). Ele ficou no `fetch` global
+// quando a issue #57 trocou o cliente das três provas, e um modelo de 30B pode
+// passar dos 300s do undici para carregar — na máquina que declarou 900s, o
+// aviso "aquecimento falhou" mentia sobre um aquecimento que ia bem. O teto
+// agora é o mesmo número que o operador declarou para as provas, e o cliente é
+// o `httpJson`, que já não conhece os 300s. Aqui a fração de segundo faz o
+// papel dos minutos da produção: o que se prova é de onde vem o número.
+test("preload: aquecimento lento dentro do teto declarado conclui, sem virar aviso de falha", async (t) => {
+  const url = await slowServer(t, { bodyDelay: 200 });
+  const ok = await preload(fakeProvider({ baseUrl: url, probeTimeoutSeconds: 10 }));
+  assert.equal(ok, true);
+});
+
+test("preload: aquecimento que estoura o teto declarado devolve false sem lançar", async (t) => {
+  const url = await slowServer(t, { bodyDelay: 400 });
+  const ok = await preload(fakeProvider({ baseUrl: url, probeTimeoutSeconds: 0.08 }));
+  assert.equal(ok, false);
+});
+
 test("describeAvailability: nomeia o Provedor local e o modelo, não o Ollama", () => {
   const cfg = baseCfg({ nightProvider: { model: "qwen3-coder:30b" } });
   const msg = describeAvailability(resolve(cfg, { night: true }));
@@ -442,6 +462,25 @@ test("describeAvailability: nomeia o Provedor local e o modelo, não o Ollama", 
 
 test("describeAvailability: Provedor anthropic não produz linha nenhuma", () => {
   assert.equal(describeAvailability(resolve(baseCfg(), { night: false })), null);
+});
+
+test("describeProbeStart: anuncia a sonda do Provedor local e o teto vigente", () => {
+  const cfg = baseCfg({ nightProvider: { model: "qwen3-coder:30b" } });
+  const msg = describeProbeStart(resolve(cfg, { night: true }));
+  assert.match(msg, /Provedor local/);
+  assert.match(msg, /qwen3-coder:30b/);
+  assert.match(msg, new RegExp(`${DEFAULTS.nightProvider.probeTimeoutSeconds}s`));
+});
+
+test("describeProbeStart: o teto citado é o que o operador declarou, não o padrão", () => {
+  const cfg = baseCfg({ nightProvider: { probeTimeoutSeconds: 2400 } });
+  const msg = describeProbeStart(resolve(cfg, { night: true }));
+  assert.match(msg, /2400s/);
+  assert.doesNotMatch(msg, new RegExp(`${DEFAULTS.nightProvider.probeTimeoutSeconds}s`));
+});
+
+test("describeProbeStart: Provedor anthropic não produz linha nenhuma", () => {
+  assert.equal(describeProbeStart(resolve(baseCfg(), { night: false })), null);
 });
 
 test("describeDegradation: sonda aprovada em tudo devolve null", () => {
@@ -565,6 +604,50 @@ test("describeDegradation: o número da prosa é o teto vigente, não uma consta
   const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 1800);
   assert.match(msg, /1800s/);
   assert.doesNotMatch(msg, /900s/);
+});
+
+// --- a prova que não concluiu não é prova sobre o modelo (issue #59) ---
+
+test("describeDegradation: tool_use reprovado com timeout é relatado como a prova que não concluiu", () => {
+  const probeResult = { reachable: true, toolUse: false, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /não concluiu/);
+  assert.match(msg, /900s/);
+  assert.match(msg, /nightProvider\.probeTimeoutSeconds/);
+});
+
+test("describeDegradation: tool_use reprovado com timeout não manda trocar o modelo por incapaz", () => {
+  // O conserto caro que este ticket existe para não prescrever: um `ollama
+  // pull` de dezenas de GB por uma falha que era do teto, não do modelo. A
+  // prosa do timeout cita nightProvider.model por outro motivo — um modelo que
+  // caiba na GPU —, então o que não pode vazar é o diagnóstico de incapacidade.
+  const probeResult = { reachable: true, toolUse: false, contextOk: false, contextTimedOut: true };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.doesNotMatch(msg, /não emite tool_use estruturado/);
+  assert.doesNotMatch(msg, /escreve a chamada de ferramenta como texto/);
+});
+
+test("describeDegradation: tool_use reprovado sem timeout continua mandando trocar nightProvider.model", () => {
+  const probeResult = { reachable: true, toolUse: false, contextOk: false, contextTimedOut: false };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /nightProvider\.model/);
+  assert.match(msg, /escreve a chamada de ferramenta como texto/);
+  assert.doesNotMatch(msg, /não concluiu/);
+});
+
+test("describeDegradation: inalcançável com tool_use reprovado e timeout continua recebendo a prosa de alcance", () => {
+  const probeResult = {
+    reachable: false,
+    reachableFromHost: false,
+    reachableFromSandbox: false,
+    toolUse: false,
+    contextOk: false,
+    contextTimedOut: true,
+  };
+  const msg = describeDegradation(probeResult, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /OLLAMA_HOST=0\.0\.0\.0/);
+  assert.doesNotMatch(msg, /não concluiu/);
+  assert.doesNotMatch(msg, /nightProvider\.model/);
 });
 
 // --- o cliente da biblioteca padrão, que aceita teto arbitrário (issue #57) ---
