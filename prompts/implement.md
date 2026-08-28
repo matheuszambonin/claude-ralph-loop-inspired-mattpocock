@@ -25,6 +25,7 @@ docs, and reports back in this shape:
 ```
 STATUS: ready | complete | blocked
 TICKET: ...
+CLAIM: ...
 WHY: ...
 CONTEXT: ...
 ```
@@ -42,8 +43,12 @@ yourself.
 - `STATUS: complete` — emit `<promise>{{COMPLETION_PROMISE}}</promise>` and stop.
 - `STATUS: blocked` — emit `<promise>{{BLOCKED_PROMISE}}</promise>`, say why in
   one paragraph (from `WHY`), and stop.
-- `STATUS: ready` — claim `TICKET` before you touch any code, following
-  `docs/agents/issue-tracker.md`, so a parallel iteration doesn't take it too.
+- `STATUS: ready` — run `CLAIM` with `Bash` before you touch any code, so a
+  parallel iteration doesn't take it too. Claim it yourself: `orientation` is
+  the only subagent that exists, and `docs/agents/issue-tracker.md` is a
+  document, not an agent. If `CLAIM` came back empty, read that document and
+  run the command it prescribes; if it prescribes none, say so in your progress
+  entry and go on.
 
 ## 3. Implement it
 

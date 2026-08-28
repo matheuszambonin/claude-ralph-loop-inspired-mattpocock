@@ -222,3 +222,25 @@ test("implement.md: delega pela ferramenta que a sessão anuncia, e delega sínc
   assert.match(implement, /`run_in_background: false`/);
   assert.match(implement, /`description: "orient"`/);
 });
+
+/**
+ * A regressão da issue #73: o passo 2 mandava reivindicar o ticket "following
+ * `docs/agents/issue-tracker.md`", e a indireção não se pagava nem quando o
+ * documento respondia. O do Terraços prescreve o comando na linha 113, sob
+ * "Tomar"; medido em 28/08/2026 com esse documento inteiro no contexto, o
+ * `ornith:9b` reivindicou em 0 de 8 rodadas — ele lê, volta a `gh issue view`
+ * e `gh issue list`, e reentra na órbita da Orientação. Com o comando chegando
+ * pronto no resumo, 8/8. O `qwen3-coder:30b` falhava antes de ler: em 5 de 5
+ * chamava `Task` com `subagent_type: "issue-tracker"`, que não existe.
+ */
+test("implement.md: reivindica com o comando que veio da Orientação, e não delega o claim", () => {
+  const implement = readIterationTemplates().implement;
+  // O rótulo no bloco de contrato: `checkOrientationContract` só prova que os
+  // dois prompts batem entre si, então os dois podem perdê-lo juntos.
+  assert.match(implement, /^CLAIM: /m);
+  assert.match(implement, /run `CLAIM` with `Bash`/);
+  // O outro lado da issue: com o passo 1 recém ensinando `subagent_type`, o
+  // `qwen3-coder:30b` lia "issue-tracker" como agente e chamava `Task` com
+  // `subagent_type: "issue-tracker"`, que não existe, em 5 de 5 rodadas.
+  assert.match(implement, /`orientation` is\s+the only subagent that exists/);
+});

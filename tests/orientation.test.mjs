@@ -195,6 +195,21 @@ test("delegatesOrientation: separa o prompt que delega do que orienta inline (AD
   assert.equal(delegatesOrientation("Pick the noisiest module and clean it up."), false);
 });
 
+/**
+ * Issue #73: quem orienta já lê o `docs/agents/issue-tracker.md` do alvo, então
+ * é o lado barato de descobrir o comando que reivindica. O "never invent one"
+ * não é prosa: sem ele, o Provedor local escreve um `gh issue edit --add-label
+ * in-progress` plausível contra um tracker que não tem esse rótulo.
+ */
+test("orientation.md: o resumo carrega o comando de claim, tirado do documento do alvo", () => {
+  const orientation = readOrientationTemplate();
+  assert.match(orientation, /^CLAIM: /m);
+  assert.match(orientation, /straight from docs\/agents\/issue-tracker\.md/);
+  assert.match(orientation, /Never\s+invent one/);
+  // A fase segue read-only (ADR-0004): ela reporta o comando, não o roda.
+  assert.match(orientation, /Do not claim the ticket/);
+});
+
 test("delegatesOrientation: o implement.md distribuído delega", () => {
   const implement = readFileSync(path.join(ralphHome(), "prompts", "implement.md"), "utf8");
   assert.equal(delegatesOrientation(implement), true);

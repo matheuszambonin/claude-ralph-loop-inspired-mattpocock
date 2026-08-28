@@ -6,9 +6,9 @@ back the minimum it needs to start, not the search that found it.
 
 ## Read only what deciding the ticket needs
 
-1. `docs/agents/issue-tracker.md` — where this repo's tickets live and how to
-   read them. If it's missing, say so in your report; emitting the blocked
-   promise is the iteration's job, not yours.
+1. `docs/agents/issue-tracker.md` — where this repo's tickets live, how to read
+   them, and the command that claims one. If it's missing, say so in your
+   report; emitting the blocked promise is the iteration's job, not yours.
 2. `docs/agents/triage-labels.md`, if present — the label strings for the
    triage roles.
 3. `{{PROGRESS_FILE}}` — the last few entries only. A previous iteration
@@ -36,6 +36,10 @@ Reply with exactly this shape and nothing else, under 500 words total:
 ```
 STATUS: ready | complete | blocked
 TICKET: <id and title — empty when STATUS is complete or blocked>
+CLAIM: <the exact shell command that claims TICKET on this repo's tracker,
+straight from docs/agents/issue-tracker.md, with the ticket id already in it —
+empty when the document prescribes no claim, or when STATUS isn't ready. Never
+invent one.>
 WHY: <one paragraph: why this ticket, or why the frontier is empty or blocked>
 CONTEXT: <bullet list of facts the iteration needs and can't cheaply
 rediscover — file paths, prior decisions from PROGRESS.md or the ADRs,
