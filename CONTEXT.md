@@ -122,6 +122,15 @@ texto, e uma sonda que confunde os dois acusa de truncar o prompt quem leu o
 prompt inteiro.
 _Avoid_: max_tokens, limite de tokens, teto de resposta
 
+**Corte por orientação**:
+Matar a iteração assim que o **Resumo de orientação** volta dizendo que não há
+ticket para trabalhar. Irmão do **Corte por laço** e diferente dele no que lê:
+ali o sinal é repetição de chamada, aqui é o veredicto que já chega pronto no
+primeiro passo da iteração. Vale por si, sem a promise, porque quem leria o
+resumo e decidiria obedecê-lo é o mesmo modelo que acabou de ler a receita do
+ticket junto dele.
+_Avoid_: abort, corte por status, parada antecipada
+
 **Corte por laço**:
 Matar a iteração que repete a mesma chamada de ferramenta sem sair do lugar,
 lendo o stream em vez do relógio. Distingue-se do **Teto da iteração** por

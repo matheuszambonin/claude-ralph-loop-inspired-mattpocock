@@ -77,6 +77,14 @@ vazio. `COMPLETE` continua exigindo a tag no texto: o prompt lista as duas, e
 um "não é `<promise>COMPLETE</promise>`" pensado fecharia a noite como sucesso
 sobre um backlog cheio.
 
+O resumo de orientação decide sozinho, sem esperar a promise. Quando ele volta
+com `STATUS: blocked` ou `STATUS: complete`, o Ralph corta a iteração ali,
+antes de ela tocar no repositório alvo, e o desfecho é o mesmo da promise
+correspondente. Em 01/09/2026 um modelo de 9B leu `STATUS: blocked` e leu
+junto o `CONTEXT` que descrevia o que faltava num ticket; implementou, fechou
+a issue e commitou assim mesmo. Pedir ao prompt que a iteração ignore o que
+acabou de ler não segura isso. Ler o `STATUS` do lado de fora segura.
+
 Comece sempre HITL, refine o prompt, só então vá AFK.
 
 ## Como uma iteração funciona

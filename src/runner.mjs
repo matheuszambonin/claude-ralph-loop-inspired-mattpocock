@@ -10,7 +10,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatStuckLoop } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatStuckLoop, orientationHalts } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -343,6 +343,46 @@ export function describeStuckLoop({ iteration, loop, logPath }) {
 }
 
 /**
+ * Puro: o que o operador lê quando o resumo de orientação decidiu a iteração
+ * sozinho (issue #79). Não é falha — é o desfecho que o passo 2 de
+ * `prompts/implement.md` já pedia —, então a linha diz o que *não* aconteceu:
+ * nada foi tocado no repositório alvo.
+ */
+export function describeOrientationHalt(status) {
+  const what = status === "complete" ? "o backlog concluído" : "a frente bloqueada";
+  return `a Orientação reportou ${what} (STATUS: ${status}) — iteração cortada antes de tocar no repositório alvo.`;
+}
+
+/**
+ * Puro: estado do stream e config entram, o desfecho da iteração sai. É a
+ * costura da issue #79: o resumo de orientação vale por si, sem esperar a
+ * promise que o modelo pequeno pode não escrever. `haltStatus` é o que faz
+ * `runIteration` matar o processo no meio.
+ *
+ * O `complete` sai como backlog concluído, e não como bloqueio, apesar da
+ * assimetria da #70 — quem a lê vai propor o contrário, e é este parágrafo que
+ * responde. Lá o sinal era a promise recitada no raciocínio, que o passo 2
+ * lista inteira e o modelo repete sem querer dizê-la; aqui é o `STATUS` de um
+ * resumo bem formado, o mesmo dado que o passo 2 manda a iteração obedecer sem
+ * julgar. Mapear `complete` para bloqueio não protegeria de Orientação errada:
+ * hoje ela já fecha a noite em verde, só que passando pela mão do modelo. O
+ * que mudaria é o backlog de fato vazio não conseguir mais dizer que acabou.
+ *
+ * O caminho `ready` não muda: ali o desfecho continua vindo só da promise.
+ */
+export function iterationOutcome(state, cfg) {
+  const haltStatus = orientationHalts(state.orientationStatus) ? state.orientationStatus : null;
+  return {
+    haltStatus,
+    complete: haltStatus === "complete" || foundPromise(state, cfg.completionPromise),
+    // Só o bloqueio vale pensado (issue #70): o modelo pequeno anuncia a
+    // promise no raciocínio e entrega texto sem a tag, e o desfecho de errar
+    // para mais é chamar um humano que a promise ia chamar de qualquer jeito.
+    blocked: haltStatus === "blocked" || foundPromise(state, cfg.blockedPromise, { includeThinking: true }),
+  };
+}
+
+/**
  * Anuncia o corte. Vermelho como o teto de tempo: a iteração morreu sem
  * entregar. O loop, esse, segue — ver `runLoop`.
  */
@@ -441,7 +481,10 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     // sem o Ctrl+C teriam ficado a hora inteira do teto. Aqui o corte sai em
     // segundos, assim que a Orientação repete a mesma chamada dez vezes — ou o
     // processo principal repete a mesma vinte (issue #76).
-    abortWhen: () => renderer.state.stuckLoop !== null,
+    // O laço (issues #74/#76) e o resumo de orientação que já decidiu a
+    // iteração (issue #79) cortam pela mesma porta: o que vem depois deles só
+    // gasta contexto, e no caso da #79 gasta commit no repositório alvo.
+    abortWhen: () => renderer.state.stuckLoop !== null || orientationHalts(renderer.state.orientationStatus),
     extraArgs: [...extraArgs, ...mcpArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
@@ -465,17 +508,24 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     if (stderr.trim()) process.stderr.write(paint(C.dim, stderr.trim().split("\n").slice(-8).join("\n") + "\n"));
   }
 
+  // Ao lado dos avisos acima, e não em quem chamou: a linha pertence ao
+  // cabeçalho desta iteração, e `once` e `afk` a anunciariam igual.
+  const outcome = iterationOutcome(state, cfg);
+  if (outcome.haltStatus) {
+    process.stdout.write(paint(C.yellow, "\n  ✂ " + describeOrientationHalt(outcome.haltStatus) + "\n"));
+  }
+
   return {
     code,
     timedOut,
-    looped: aborted,
+    // O corte por orientação também aborta o processo, e ele não é laço —
+    // quem responde por `looped` é o que o stream mediu, não o abort.
+    looped: aborted && state.stuckLoop !== null,
     state,
     logPath: jsonl,
-    complete: foundPromise(state, cfg.completionPromise),
-    // Só o bloqueio vale pensado (issue #70): o modelo pequeno anuncia a
-    // promise no raciocínio e entrega texto sem a tag, e o desfecho de errar
-    // para mais é chamar um humano que a promise ia chamar de qualquer jeito.
-    blocked: foundPromise(state, cfg.blockedPromise, { includeThinking: true }),
+    haltStatus: outcome.haltStatus,
+    complete: outcome.complete,
+    blocked: outcome.blocked,
   };
 }
 

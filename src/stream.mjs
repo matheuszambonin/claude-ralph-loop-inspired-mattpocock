@@ -102,6 +102,34 @@ export const ORIENTATION_TARGET_LOOP_LIMIT = 25;
  */
 export const MAIN_LOOP_LIMIT = 20;
 
+/**
+ * Os dois `STATUS` do contrato de `prompts/orientation.md` em que a iteração
+ * não tem trabalho a fazer. O passo 2 de `prompts/implement.md` manda parar
+ * nos dois, e em 01/09/2026 15:10Z o `ornith:9b` leu `STATUS: blocked`, leu
+ * junto o `CONTEXT` que descrevia o que faltava num ticket, e implementou
+ * assim mesmo: editou dois arquivos do alvo, fechou a issue e commitou (issue
+ * #79). Um modelo pequeno não ignora o que acabou de ler, então quem para a
+ * iteração é o Ralph.
+ */
+const HALTING_STATUSES = ["complete", "blocked"];
+
+/**
+ * Puro: o resumo de orientação entra, o valor de `STATUS:` sai em
+ * minúsculas — `null` quando o texto não traz a linha. Só a primeira palavra
+ * depois dos dois-pontos, e é ela que separa um veredicto do eco do rótulo do
+ * contrato (`STATUS: ready | complete | blocked`), que sai como `ready` e não
+ * corta nada.
+ */
+export function parseOrientationStatus(summary) {
+  const m = /^STATUS:\s*(\S+)/m.exec(summary ?? "");
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** O `STATUS` de resumo que decide o desfecho da iteração sozinho (issue #79). */
+export function orientationHalts(status) {
+  return HALTING_STATUSES.includes(status);
+}
+
 export function createStreamRenderer({ onEvent } = {}) {
   const state = {
     text: "",
@@ -118,6 +146,7 @@ export function createStreamRenderer({ onEvent } = {}) {
     orientationCalls: 0,
     orientationSummaries: 0,
     orientationDelegatedTo: null,
+    orientationStatus: null,
     failedSkills: [],
     stuckLoop: null,
   };
@@ -325,6 +354,9 @@ ${detail}`;
           // orientaram ninguém — e a segunda volta sem `is_error`.
           if (orientationCallIds.has(block.tool_use_id) && !block.is_error && /^STATUS:/m.test(body)) {
             state.orientationSummaries += 1;
+            // Só daqui: um `Bash` que grepa os próprios logs do Ralph traz a
+            // linha `STATUS:` no `tool_result` sem ter orientado ninguém.
+            state.orientationStatus = parseOrientationStatus(body);
           }
           if (subagentCalls.has(block.tool_use_id)) {
             const tokens = parseSubagentTokens(body);

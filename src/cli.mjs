@@ -426,7 +426,11 @@ async function cmdOnce(flags) {
   // E o corte por laço (issue #74) pelo mesmo motivo: aqui quem assiste viu a
   // iteração repetindo, mas quem lê o código de saída depois não viu nada.
   else if (res.looped) reportStuckLoop(root, cfg, res, 1);
-  process.exit(res.code === 0 ? 0 : 1);
+  // O corte por orientação (issue #79) é desfecho, não falha, e sairia com
+  // código 1 se ninguém dissesse o contrário: quem aborta o processo é o
+  // Ralph, e o `claude` morto não devolve 0. Só ele — a iteração que morreu
+  // por outro motivo continua saindo 1, mesmo tendo pensado a promise.
+  process.exit(res.haltStatus || res.code === 0 ? 0 : 1);
 }
 
 async function cmdAfk(flags) {

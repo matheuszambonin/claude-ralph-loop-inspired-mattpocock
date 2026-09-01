@@ -9,6 +9,8 @@ import {
   formatOrientationMissWarning,
   formatStuckLoop,
   foundPromise,
+  parseOrientationStatus,
+  orientationHalts,
   ORIENTATION_LOOP_LIMIT,
   MAIN_LOOP_LIMIT,
   ORIENTATION_TARGET_LOOP_LIMIT,
@@ -735,4 +737,79 @@ test("foundPromise: a promise escrita como texto continua contando", () => {
   const state = renderer.end();
   assert.equal(foundPromise(state, "COMPLETE"), true);
   assert.equal(foundPromise(state, "BLOCKED", { includeThinking: true }), false);
+});
+
+/**
+ * O resumo de orientação da rodada de 01/09/2026 15:10Z no alvo Terraços
+ * (issue #79): bem formado, `STATUS: blocked`, e um `CONTEXT` com a receita
+ * completa do que implementar. A iteração implementou assim mesmo.
+ */
+const BLOCKED_SUMMARY = [
+  "STATUS: blocked",
+  "TICKET: (none — frontier empty)",
+  "CLAIM: (empty)",
+  "WHY: nenhuma issue ready-for-agent na frente; a #19 está aberta mas sem label.",
+  "CONTEXT: - terracos/core/ends.py: a tolerância de encosto da ponta de jusante",
+  "  falta em `locate_ends`; a fórmula é `abs(z - z0) <= tol`.",
+].join("\n");
+
+test("parseOrientationStatus: lê o STATUS do resumo bloqueado da issue #79", () => {
+  assert.equal(parseOrientationStatus(BLOCKED_SUMMARY), "blocked");
+  assert.equal(parseOrientationStatus(SUMMARY), "ready");
+});
+
+test("parseOrientationStatus: texto sem a linha do contrato não tem STATUS", () => {
+  assert.equal(parseOrientationStatus("The orientation agent hit an output limit."), null);
+  assert.equal(parseOrientationStatus(""), null);
+});
+
+test("parseOrientationStatus: o eco do rótulo do contrato sai como ready, e não corta nada", () => {
+  // `STATUS: ready | complete | blocked` é o rótulo do bloco de exemplo. Ler a
+  // primeira palavra é o que impede um resumo que copia o template de ser
+  // confundido com um veredicto de bloqueio.
+  assert.equal(parseOrientationStatus("STATUS: ready | complete | blocked\nTICKET: ..."), "ready");
+});
+
+test("orientationHalts: só complete e blocked param a iteração", () => {
+  assert.equal(orientationHalts("blocked"), true);
+  assert.equal(orientationHalts("complete"), true);
+  assert.equal(orientationHalts("ready"), false);
+  assert.equal(orientationHalts(null), false);
+});
+
+test("createStreamRenderer: o resumo bloqueado guarda o STATUS que corta a iteração (issue #79)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { description: "orient", subagent_type: "orientation", run_in_background: false }));
+  feed(renderer, toolResult("toolu_1", { content: [{ type: "text", text: BLOCKED_SUMMARY }] }));
+  const state = renderer.end();
+  assert.equal(state.orientationSummaries, 1);
+  assert.equal(state.orientationStatus, "blocked");
+  assert.equal(orientationHalts(state.orientationStatus), true);
+});
+
+test("createStreamRenderer: o resumo ready não corta nada (issue #79)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { description: "orient", subagent_type: "orientation", run_in_background: false }));
+  feed(renderer, toolResult("toolu_1", { content: [{ type: "text", text: SUMMARY }] }));
+  const state = renderer.end();
+  assert.equal(state.orientationStatus, "ready");
+  assert.equal(orientationHalts(state.orientationStatus), false);
+});
+
+test("createStreamRenderer: o que não é resumo de orientação não vira STATUS (issue #79)", () => {
+  const renderer = createStreamRenderer();
+  // Um `Bash` do principal que grepa os próprios logs do Ralph traz a linha
+  // `STATUS:` no `tool_result` sem nunca ter passado pela Orientação.
+  feed(renderer, mainTool("toolu_1", "Bash", { command: "grep -r STATUS: .ralph/logs" }));
+  feed(renderer, toolResult("toolu_1", { content: "STATUS: blocked" }));
+  const state = renderer.end();
+  assert.equal(state.orientationStatus, null);
+});
+
+test("createStreamRenderer: delegação que volta com erro não deixa STATUS (issue #79)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { description: "orient", subagent_type: "orientation" }));
+  feed(renderer, toolResult("toolu_1", { is_error: true, content: "STATUS: blocked" }));
+  const state = renderer.end();
+  assert.equal(state.orientationStatus, null);
 });

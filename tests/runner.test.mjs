@@ -3,7 +3,15 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildPrompt, renderPrompt, renderSignature, describeIterationTimeout, describeStuckLoop } from "../src/runner.mjs";
+import {
+  buildPrompt,
+  renderPrompt,
+  renderSignature,
+  describeIterationTimeout,
+  describeStuckLoop,
+  describeOrientationHalt,
+  iterationOutcome,
+} from "../src/runner.mjs";
 import { buildOrientationPrompt } from "../src/orientation.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 
@@ -143,4 +151,50 @@ test("describeStuckLoop: o laço do principal aponta o modelo da iteração, nã
   assert.match(msg, /git log --oneline -5/);
   assert.match(msg, /nightProvider\.model/);
   assert.doesNotMatch(msg, /orientationModel/);
+});
+
+/** O estado que o renderizador entrega ao fim de uma iteração, no mínimo. */
+function streamState(extra = {}) {
+  return { text: "", thinking: "", finalResult: null, orientationStatus: null, stuckLoop: null, ...extra };
+}
+
+test("iterationOutcome: STATUS blocked decide o desfecho sem promise nenhuma (issue #79)", () => {
+  // A rodada de 01/09/2026 15:10Z: a Orientação disse `blocked`, a iteração
+  // implementou a #19 assim mesmo e nunca emitiu promise. O desfecho é do
+  // resumo, não do que o modelo pequeno resolveu escrever depois dele.
+  const outcome = iterationOutcome(streamState({ orientationStatus: "blocked" }), baseCfg());
+  assert.equal(outcome.haltStatus, "blocked");
+  assert.equal(outcome.blocked, true);
+  assert.equal(outcome.complete, false);
+});
+
+test("iterationOutcome: STATUS complete fecha o backlog pelo resumo (issue #79)", () => {
+  const outcome = iterationOutcome(streamState({ orientationStatus: "complete" }), baseCfg());
+  assert.equal(outcome.haltStatus, "complete");
+  assert.equal(outcome.complete, true);
+  assert.equal(outcome.blocked, false);
+});
+
+test("iterationOutcome: com STATUS ready o desfecho continua vindo só da promise (issue #79)", () => {
+  const cfg = baseCfg();
+  const ready = streamState({ orientationStatus: "ready" });
+  assert.deepEqual(iterationOutcome(ready, cfg), { haltStatus: null, complete: false, blocked: false });
+
+  const delivered = streamState({ orientationStatus: "ready", finalResult: "pronto <promise>COMPLETE</promise>" });
+  assert.equal(iterationOutcome(delivered, cfg).complete, true);
+});
+
+test("iterationOutcome: a promise pensada continua valendo para o bloqueio (issue #70)", () => {
+  const state = streamState({ thinking: "I should emit <promise>BLOCKED</promise> here" });
+  const outcome = iterationOutcome(state, baseCfg());
+  assert.equal(outcome.haltStatus, null);
+  assert.equal(outcome.blocked, true);
+});
+
+test("describeOrientationHalt: nomeia o corte e o que a iteração não chegou a fazer (issue #79)", () => {
+  assert.match(describeOrientationHalt("blocked"), /Orientação/);
+  assert.match(describeOrientationHalt("blocked"), /blocked/);
+  assert.match(describeOrientationHalt("complete"), /complete/);
+  // O que o operador precisa saber é que nada foi tocado no alvo.
+  assert.match(describeOrientationHalt("blocked"), /antes de tocar no repositório alvo/);
 });
