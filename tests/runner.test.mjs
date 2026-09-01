@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { buildPrompt, renderPrompt, describeIterationTimeout, describeStuckLoop } from "../src/runner.mjs";
+import { buildPrompt, renderPrompt, renderSignature, describeIterationTimeout, describeStuckLoop } from "../src/runner.mjs";
 import { buildOrientationPrompt } from "../src/orientation.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 
@@ -51,6 +51,25 @@ test("renderPrompt: config do usuário sem blockedPromise cai no padrão de DEFA
   delete userCfg.blockedPromise;
   const cfg = { ...DEFAULTS, ...userCfg };
   assert.equal(renderPrompt("{{BLOCKED_PROMISE}}", cfg), "BLOCKED");
+});
+
+test("renderSignature: modelo e log, e o `--night` aparece quando o Provedor é local", () => {
+  const log = ".ralph/logs/2026-09-01T15-10-09-175Z-iter-01.jsonl";
+  assert.equal(
+    renderSignature({ logPath: log, model: "sonnet" }),
+    "Ralph · modelo `sonnet` · log `.ralph/logs/2026-09-01T15-10-09-175Z-iter-01.jsonl`"
+  );
+  assert.equal(
+    renderSignature({ logPath: log, model: "ornith:9b", night: true }),
+    "Ralph · modelo `ornith:9b` (--night) · log `.ralph/logs/2026-09-01T15-10-09-175Z-iter-01.jsonl`"
+  );
+});
+
+test("renderPrompt: deixa SIGNATURE de pé, porque o log é de cada iteração", () => {
+  // O prompt é montado uma vez para o loop inteiro, e o nome do log só existe
+  // dentro de `runIteration`. Resolver aqui daria a todas as iterações o log
+  // de nenhuma.
+  assert.equal(renderPrompt("{{SIGNATURE}}", baseCfg()), "{{SIGNATURE}}");
 });
 
 test("buildPrompt: lê o prompt do repo alvo e resolve os placeholders", (t) => {

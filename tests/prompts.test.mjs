@@ -244,3 +244,17 @@ test("implement.md: reivindica com o comando que veio da Orientação, e não de
   // `subagent_type: "issue-tracker"`, que não existe, em 5 de 5 rodadas.
   assert.match(implement, /`orientation` is\s+the only subagent that exists/);
 });
+
+/**
+ * A assinatura nasce da auditoria de 01/09/2026 no alvo Terraços: para saber
+ * qual das dezenove rodadas tinha entregue cada um dos treze tickets fechados
+ * foi preciso cruzar o `gh issue close` de dentro de cada log com o horário de
+ * fechamento no GitHub, e seis tickets ficaram sem resposta. O placeholder é o
+ * que o `runIteration` resolve com o log daquela iteração.
+ */
+test("todo prompt de iteração pede a assinatura, e ela é a mesma em todos", () => {
+  const templates = readIterationTemplates();
+  for (const name of ITERATION_PROMPTS) {
+    assert.match(templates[name], /\{\{SIGNATURE\}\}/, `${name} não pede a assinatura`);
+  }
+});

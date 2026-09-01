@@ -43,7 +43,13 @@ was too big. Shrink it.
 
 Append to `{{PROGRESS_FILE}}`: what you removed, why it was entropy, and
 anything you deliberately left alone (so the next iteration doesn't re-examine
-it). Commit to the current branch.
+it). Commit to the current branch, with a message ending in this line, copied
+verbatim:
+
+    {{SIGNATURE}}
+
+You can't rebuild that line from inside the sandbox, and it is what points a
+reviewer back to the log that holds the reasoning.
 
 ## Stop conditions
 

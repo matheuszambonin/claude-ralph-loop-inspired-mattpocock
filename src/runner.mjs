@@ -41,13 +41,38 @@ function feedbackLoopsBlock(cfg) {
     : "1. Discover this repo's checks (package.json scripts, Makefile, CI config) and run every one that applies.";
 }
 
-/** Pura: template do prompt de iteração entra, prompt resolvido sai. Sem fs, sem Docker. */
+/**
+ * Pura: template do prompt de iteração entra, prompt resolvido sai. Sem fs, sem Docker.
+ *
+ * `{{SIGNATURE}}` fica de fora de propósito: ele nomeia o log daquela iteração,
+ * e o prompt é montado uma vez para o loop inteiro. Quem o resolve é
+ * `runIteration`, com `renderSignature`.
+ */
 export function renderPrompt(template, cfg) {
   return template
     .replaceAll("{{PROGRESS_FILE}}", cfg.progressFile)
     .replaceAll("{{COMPLETION_PROMISE}}", cfg.completionPromise)
     .replaceAll("{{BLOCKED_PROMISE}}", cfg.blockedPromise)
     .replaceAll("{{FEEDBACK_LOOPS}}", feedbackLoopsBlock(cfg));
+}
+
+/**
+ * A linha de procedência que a iteração copia no fechamento do ticket e no
+ * commit. Pura: caminho do log e Provedor entram, a linha sai.
+ *
+ * Ela existe porque reconstruir isso depois custa caro: em 01/09/2026, saber
+ * qual das dezenove rodadas no alvo Terraços tinha entregue cada um dos treze
+ * tickets exigiu cruzar `gh issue list` com o `gh issue close` de dentro de
+ * cada log, por horário — e seis tickets ficaram sem resposta. O modelo entra
+ * junto do log porque é ele que separa a rodada paga da rodada `--night`, e o
+ * que se revisa depois de uma noite de modelo pequeno não é o mesmo que se
+ * revisa depois de uma rodada com o modelo grande.
+ *
+ * O caminho vem relativo à raiz do alvo: é assim que ele serve para quem lê a
+ * issue no navegador e vai procurar o arquivo no repositório.
+ */
+export function renderSignature({ logPath, model, night = false }) {
+  return `Ralph · modelo \`${model}\`${night ? " (--night)" : ""} · log \`${logPath}\``;
 }
 
 /**
@@ -357,6 +382,17 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     onEvent: (evt) => appendFileSync(jsonl, JSON.stringify(evt) + "\n", "utf8"),
   });
 
+  // A assinatura só existe aqui: o nome do log é desta iteração, e o prompt do
+  // loop foi montado antes de qualquer uma delas existir.
+  const signed = prompt.replaceAll(
+    "{{SIGNATURE}}",
+    renderSignature({
+      logPath: path.relative(root, jsonl).replace(/\\/g, "/"),
+      model: provider.model,
+      night: provider.kind === "local",
+    })
+  );
+
   const header = `iteração ${iteration}/${total}${provider.kind === "local" ? ` · Provedor local (${provider.model})` : ""}`;
   process.stdout.write(
     `\n${paint(C.magenta, "━".repeat(8))} ${paint(C.bold, header)} ${paint(C.dim, new Date().toLocaleTimeString())} ${paint(C.magenta, "━".repeat(8))}\n`
@@ -394,7 +430,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), { ...cfg, orientationModel: provider.orientationModel }, tools);
   const { code, stderr, timedOut, aborted } = await runClaudeStreaming(cfg.sandboxName, {
     workdir,
-    prompt,
+    prompt: signed,
     model: provider.model,
     env: renderProviderEnv(provider),
     // O log é escrito evento a evento com `appendFileSync`, então matar o

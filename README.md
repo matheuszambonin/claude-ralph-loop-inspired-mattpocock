@@ -359,6 +359,18 @@ Os placeholders `{{PROGRESS_FILE}}`, `{{COMPLETION_PROMISE}}`,
 `{{BLOCKED_PROMISE}}` e `{{FEEDBACK_LOOPS}}` são substituídos a cada iteração a
 partir do config.
 
+`{{SIGNATURE}}` é o quinto, e vem da iteração em vez do config: ele nomeia o
+modelo da rodada e o arquivo de log daquela iteração, e os três prompts pedem
+que ele feche o comentário do ticket e a mensagem de commit.
+
+```
+Ralph · modelo `ornith:9b` (--night) · log `.ralph/logs/2026-09-01T15-10-09-175Z-iter-01.jsonl`
+```
+
+Sem isso, saber qual rodada entregou um ticket exige cruzar o horário de
+fechamento no tracker com o `gh issue close` de dentro de cada log — e para
+uma parte dos tickets não há resposta.
+
 ### O prompt instalado é cópia, não rascunho
 
 Cada template carrega no topo a linha `<!-- ralph:prompt <nome> -->`, e a cópia

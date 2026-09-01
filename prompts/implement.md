@@ -94,11 +94,20 @@ progress log poisons every context that follows it.
 Then close the ticket on the tracker, following
 `docs/agents/issue-tracker.md`.
 
+Sign it. The closing comment on the tracker ends with this line, copied
+verbatim:
+
+    {{SIGNATURE}}
+
+You can't rebuild that line from inside the sandbox, and without it the human
+reviewing the ticket months from now has no way back to the reasoning that
+produced the change.
+
 ## 7. Commit
 
-Commit to the current branch with a message that names the ticket. One
-iteration, one commit. Never push, never open a PR, never merge — the human
-decides what leaves this branch.
+Commit to the current branch with a message that names the ticket and ends with
+the same signature line. One iteration, one commit. Never push, never open a
+PR, never merge — the human decides what leaves this branch.
 
 ## Hard rules
 
