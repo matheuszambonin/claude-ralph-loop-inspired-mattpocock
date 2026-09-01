@@ -229,3 +229,25 @@ test("orientation.md: a proibição de escrever no tracker nomeia os verbos, nã
     assert.ok(denial.includes(verb), `o prompt não proíbe '${verb}'`);
   }
 });
+
+/**
+ * Issue #78: a Orientação relatou como aberta e em andamento uma issue que a
+ * iteração anterior fechara 43 minutos antes. O estado não veio da consulta —
+ * veio do comentário de *outra* issue, que o `gh issue list --json ...,comments`
+ * traz anexado na mesma leitura e que ninguém revisita quando o ticket fecha.
+ */
+test("orientation.md: o estado de um ticket vem da consulta a ele, e o resumo de orientação só nomeia ticket conferido", () => {
+  const paragraphs = readOrientationTemplate().split(/\n\s*\n/);
+  const rule = paragraphs.find((p) => /state of a ticket/i.test(p));
+  assert.ok(rule, "nenhum parágrafo diz de onde vem o estado de um ticket");
+  // O caso da issue: comentário e corpo de outra issue são pista, nunca estado.
+  // A polaridade entra na asserção — sem ela, um parágrafo que dissesse o
+  // oposto passaria só por citar as duas palavras.
+  assert.match(rule, /comment/i);
+  assert.match(rule, /body/i);
+  assert.match(rule, /never state/i);
+  // E o resumo de orientação não pode nomear ticket que a iteração não conferiu.
+  assert.match(rule, /WHY/);
+  assert.match(rule, /CONTEXT/);
+  assert.match(rule, /this iteration/i);
+});

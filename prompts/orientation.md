@@ -27,6 +27,12 @@ From the issue tracker, find the first ticket on the frontier: state
 another iteration. Prefer risky work — architecture, integration points,
 unknowns — over polish.
 
+The state of a ticket is what a query for that ticket returns. Prose about a
+ticket, in another issue's body or in any comment, was true when someone wrote
+it and nothing revisits it when the ticket closes; that is a lead to go check,
+never state. Every ticket you name in the report, in `WHY` and in `CONTEXT`,
+is one you queried during this iteration.
+
 Do not claim the ticket, and never run a tracker command that writes — `close`,
 `comment`, `edit`, `label`, a new issue, whichever CLI the tracker uses. The
 `CLAIM:` command below you compose and report; running it is the iteration's
