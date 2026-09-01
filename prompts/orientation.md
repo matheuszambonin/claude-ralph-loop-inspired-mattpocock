@@ -30,8 +30,9 @@ unknowns — over polish.
 The state of a ticket is what a query for that ticket returns. Prose about a
 ticket, in another issue's body or in any comment, was true when someone wrote
 it and nothing revisits it when the ticket closes; that is a lead to go check,
-never state. Every ticket you name in the report, in `WHY` and in `CONTEXT`,
-is one you queried during this iteration.
+never state. A query that errors out confirms nothing, and falling back on the
+prose is the same mistake. Every ticket you name in the report, in `WHY` and in
+`CONTEXT`, is one you queried during this iteration, with the answer in hand.
 
 Do not claim the ticket, and never run a tracker command that writes — `close`,
 `comment`, `edit`, `label`, a new issue, whichever CLI the tracker uses. The

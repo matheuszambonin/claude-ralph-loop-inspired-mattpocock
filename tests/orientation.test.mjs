@@ -235,6 +235,11 @@ test("orientation.md: a proibição de escrever no tracker nomeia os verbos, nã
  * iteração anterior fechara 43 minutos antes. O estado não veio da consulta —
  * veio do comentário de *outra* issue, que o `gh issue list --json ...,comments`
  * traz anexado na mesma leitura e que ninguém revisita quando o ticket fecha.
+ *
+ * A rodada de prova mostrou a segunda porta: `gh issue view 19 --comments`
+ * reprovou três vezes contra este GitHub (`projectCards` deprecado), e a
+ * Orientação preencheu o buraco com a mesma prosa. Consulta que falha não é
+ * consulta.
  */
 test("orientation.md: o estado de um ticket vem da consulta a ele, e o resumo de orientação só nomeia ticket conferido", () => {
   const paragraphs = readOrientationTemplate().split(/\n\s*\n/);
@@ -246,6 +251,7 @@ test("orientation.md: o estado de um ticket vem da consulta a ele, e o resumo de
   assert.match(rule, /comment/i);
   assert.match(rule, /body/i);
   assert.match(rule, /never state/i);
+  assert.match(rule, /confirms nothing/i);
   // E o resumo de orientação não pode nomear ticket que a iteração não conferiu.
   assert.match(rule, /WHY/);
   assert.match(rule, /CONTEXT/);
