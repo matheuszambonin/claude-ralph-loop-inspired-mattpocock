@@ -78,6 +78,12 @@ export const DEFAULTS = {
     // única dimensão que o conceito declara não medir — velocidade. Quem tem
     // máquina lenta e paciência declara sua paciência aqui.
     probeTimeoutSeconds: 900,
+    // quantos tokens a iteração pode escrever numa resposta, via
+    // CLAUDE_CODE_MAX_OUTPUT_TOKENS (issue #69). O dobro do padrão do Claude
+    // Code, dimensionado para quem responde direto e não para o modelo que
+    // gasta o orçamento raciocinando antes — a iteração que morreu por isso
+    // está contada em `renderEnv`, src/provider.mjs.
+    maxOutputTokens: 64000,
   },
 };
 
@@ -116,6 +122,15 @@ export function loadConfig(root) {
     integer: true,
     fallback: DEFAULTS.nightProvider.minContext,
   });
+  // Sem esta guarda, `"32k"` não estoura aqui: viaja como variável de ambiente
+  // e a iteração morre do outro lado, pelo mesmo erro que o campo existe para
+  // evitar.
+  assertNumberField("nightProvider.maxOutputTokens", cfg.nightProvider.maxOutputTokens, {
+    max: MAX_OUTPUT_TOKENS,
+    unit: "tokens",
+    integer: true,
+    fallback: DEFAULTS.nightProvider.maxOutputTokens,
+  });
   assertNumberField("iterationTimeoutSeconds", cfg.iterationTimeoutSeconds, {
     max: MAX_ITERATION_TIMEOUT_SECONDS,
     unit: "segundos",
@@ -143,6 +158,13 @@ const MAX_MIN_CONTEXT = 10_000_000;
 // ele avisa e dispara na hora, e o teto de uma iteração viraria o oposto do
 // que o campo promete — toda iteração morta no primeiro instante.
 const MAX_ITERATION_TIMEOUT_SECONDS = 2_147_483;
+
+// Este teto não é físico como os dois de cima: nada quebra no Ralph com um
+// número grande, ele só viaja para o outro lado. O que ele pega é o dígito a
+// mais e a unidade colada, porque nenhum modelo escreve um milhão de tokens
+// numa resposta. Quanto o modelo de fato aceita continua sendo pergunta para
+// ele — declarar acima disso é erro que só aparece na iteração.
+const MAX_OUTPUT_TOKENS = 1_000_000;
 
 /**
  * Guarda de campo numérico (issues #57, #60 e #67). Ela existe porque errar

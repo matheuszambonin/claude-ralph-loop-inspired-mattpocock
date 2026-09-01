@@ -260,7 +260,11 @@ no mesmo Provedor — `ANTHROPIC_BASE_URL` é variável de processo, não de fas
     // teto de cada prova de /v1/messages do doctor e do aquecimento antes da
     // iteração 1; suba se a máquina é lenta e a espera é aceitável — night
     // mode gasta tempo ocioso, não token pago
-    "probeTimeoutSeconds": 900
+    "probeTimeoutSeconds": 900,
+    // quantos tokens a iteração pode escrever numa resposta; o padrão do
+    // Claude Code (32000) não cabe num modelo que raciocina antes de
+    // responder — o raciocínio gasta orçamento e não deixa texto
+    "maxOutputTokens": 64000
   }
 }
 ```

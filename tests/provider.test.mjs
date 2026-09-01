@@ -111,6 +111,15 @@ test("renderEnv: Provedor local traz base URL e um token não-vazio", () => {
   assert.ok(env.ANTHROPIC_AUTH_TOKEN);
 });
 
+// O erro que matou a iteração medida citava a variável que o conserta
+// (issue #69); o relato está no docblock de `renderEnv`.
+test("renderEnv: Provedor local declara o Orçamento de saída da iteração", () => {
+  // Valor que não é o padrão de propósito: o que se prova aqui é a procedência,
+  // que o número sai do `nightProvider` do operador e não de um literal.
+  const provider = resolve(baseCfg({ nightProvider: { maxOutputTokens: 96000 } }), { night: true });
+  assert.equal(renderEnv(provider).CLAUDE_CODE_MAX_OUTPUT_TOKENS, "96000");
+});
+
 test("requiresAnthropicAuth: true para anthropic, false para local", () => {
   assert.equal(requiresAnthropicAuth(resolve(baseCfg(), { night: false })), true);
   assert.equal(requiresAnthropicAuth(resolve(baseCfg(), { night: true })), false);

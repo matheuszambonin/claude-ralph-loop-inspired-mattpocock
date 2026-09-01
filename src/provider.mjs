@@ -31,6 +31,7 @@ export function resolve(cfg, { night = false } = {}) {
     keepAlive: provider.keepAlive,
     minContext: provider.minContext,
     probeTimeoutSeconds: provider.probeTimeoutSeconds,
+    maxOutputTokens: provider.maxOutputTokens,
   };
 }
 
@@ -41,10 +42,22 @@ export function resolve(cfg, { night = false } = {}) {
  *
  * O token é uma string qualquer não-vazia: o Ollama ignora o valor, mas o SDK
  * recusa a requisição sem ele.
+ *
+ * O Orçamento de saída entra aqui porque o padrão do Claude Code (32000) foi
+ * dimensionado para quem responde direto. Em 28/08/2026, no repo alvo
+ * Terraços, uma iteração contra `ornith:9b` morreu com `terminal_reason:
+ * "api_error"` depois de 38 turnos e sete minutos, e a mensagem nomeava o
+ * conserto: `Claude's response exceeded the 32000 output token maximum`. É a
+ * issue #64 um andar acima — lá o teto apertado era o da sonda e o preço era um
+ * veredito errado; aqui é o da iteração, e o preço é a iteração inteira.
  */
 export function renderEnv(provider) {
   if (provider.kind !== "local") return {};
-  return { ANTHROPIC_BASE_URL: provider.baseUrl, ANTHROPIC_AUTH_TOKEN: "ralph-night-mode" };
+  return {
+    ANTHROPIC_BASE_URL: provider.baseUrl,
+    ANTHROPIC_AUTH_TOKEN: "ralph-night-mode",
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(provider.maxOutputTokens),
+  };
 }
 
 /**
