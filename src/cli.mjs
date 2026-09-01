@@ -15,6 +15,8 @@ import {
   allowHostLoopback,
   describeHostLoopbackOpened,
   mountsFor,
+  collectHostVolumes,
+  describeWorkspacesOutsideLocalDisk,
 } from "./sandbox.mjs";
 import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth, reportIterationTimeout, reportStuckLoop } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
@@ -244,6 +246,12 @@ async function cmdDoctor(flags) {
 
   if (!(await dockerAvailable())) return bad("docker sandbox indisponível — Docker Desktop está rodando?");
   ok("docker sandbox disponível");
+
+  // Antes da checagem de existência porque é a linha seguinte — "será criado
+  // na primeira execução" — que este aviso qualifica (issue #27): num
+  // workspace fora de disco local, a criação é justamente o que pode nunca
+  // acontecer.
+  for (const line of describeWorkspacesOutsideLocalDisk(mountsFor(root, cfg), await collectHostVolumes())) warn(line);
 
   if (!(await sandboxExists(cfg.sandboxName))) {
     warn(`sandbox '${cfg.sandboxName}' ainda não existe (será criado na primeira execução)`);

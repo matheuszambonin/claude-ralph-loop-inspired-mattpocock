@@ -107,6 +107,96 @@ export function mountsFor(root, cfg) {
 }
 
 /**
+ * Sistema de arquivos que um disco local reporta na única plataforma onde esta
+ * sonda roda. Tudo que difere disso num workspace do sandbox vira aviso.
+ */
+const LOCAL_DISK_FILESYSTEM = "NTFS";
+
+/** Campo de texto vindo de fora: string aparada, ou "" para qualquer outra coisa. */
+function text(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Letra do volume do host, aceitando as três formas que circulam por aqui: o
+ * caminho de um workspace (`G:\\repo`), o `DeviceID` do Windows (`G:`) e a
+ * própria letra (`G`). "" quando não há nenhuma — o caso de Linux, macOS e o
+ * de um caminho UNC.
+ */
+function volumeLetterOf(value) {
+  const m = /^([A-Za-z])(?::|$)/.exec(text(value));
+  return m ? m[1].toUpperCase() : "";
+}
+
+/**
+ * Volumes do host onde os workspaces do sandbox vivem (issue #27). Ponto
+ * impuro fino e Windows-only de propósito: é onde a falha de virtiofs foi
+ * observada e onde existe letra de volume. Em qualquer outra plataforma
+ * devolve nada e o doctor fica em silêncio — um ramo para Linux e macOS seria
+ * calibrado no escuro, e `describeSandboxCreateFailure` já traduz o erro real
+ * lá quando o caso aparecer.
+ *
+ * Nunca lança: PowerShell ausente, timeout, política de execução ou JSON
+ * inválido são ausência de fatos, não exceção. Esta é uma checagem de
+ * diagnóstico — derrubar o `doctor` por causa dela seria pior do que calar.
+ *
+ * O que entrega o volume é o sistema de arquivos, não o tipo de drive: o
+ * Google Drive File Stream se apresenta como disco fixo (`DriveType 3`) e
+ * reporta `FAT32`.
+ */
+export async function collectHostVolumes({ platform = process.platform, execImpl = execFileAsync } = {}) {
+  if (platform !== "win32") return [];
+  try {
+    const { stdout } = await execImpl(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance -ClassName Win32_LogicalDisk | Select-Object DeviceID,FileSystem,VolumeName | ConvertTo-Json -Compress",
+      ],
+      { encoding: "utf8", timeout: 10_000, windowsHide: true },
+    );
+    const parsed = JSON.parse(stdout);
+    return (Array.isArray(parsed) ? parsed : [parsed])
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({ letter: volumeLetterOf(row.DeviceID), fileSystem: text(row.FileSystem), label: text(row.VolumeName) }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Uma linha de aviso por volume do host que abriga workspace do sandbox e não
+ * reporta sistema de arquivos de disco local (issue #27). Pura: recebe a mesma
+ * lista de mounts que o `create` usa e os fatos colhidos, devolve texto — o
+ * teste não depende de qual disco a máquina que roda os testes tem.
+ *
+ * A linha relata o fato colhido e o que se sabe sobre ele; não prevê o
+ * futuro. Sai como aviso e nunca como falha porque um volume exótico pode
+ * muito bem funcionar, e quem lê julga se o caso é o dele.
+ *
+ * Volume sem sistema de arquivos reportado não vira aviso: "não reportou" não
+ * é o mesmo que "não é NTFS", e avisar sobre ausência de dado seria o aviso
+ * falso que esta checagem existe para não dar.
+ */
+export function describeWorkspacesOutsideLocalDisk(mounts, volumes) {
+  const letters = new Set((mounts ?? []).map(volumeLetterOf).filter(Boolean));
+  return (volumes ?? [])
+    .filter((v) => v && typeof v === "object")
+    .map((v) => ({ letter: volumeLetterOf(v.letter), fileSystem: text(v.fileSystem), label: text(v.label) }))
+    .filter((v) => letters.has(v.letter) && v.fileSystem && v.fileSystem.toUpperCase() !== LOCAL_DISK_FILESYSTEM)
+    .map(
+      (v) =>
+        `workspace do sandbox no volume ${v.letter}: — sistema de arquivos ${v.fileSystem}, ` +
+        `rótulo ${v.label ? `"${v.label}"` : "sem rótulo"}; disco local no Windows reporta ${LOCAL_DISK_FILESYSTEM}.\n` +
+        "  O compartilhamento de arquivos do docker sandbox é virtiofs, e criar sandbox com workspace num volume\n" +
+        "  que reporta FAT32 e disco fixo — como o Google Drive File Stream se apresenta — já foi observado\n" +
+        "  terminando em EINVAL (issue #24). Se for esse o caso deste volume, um clone em disco local é a saída."
+    );
+}
+
+/**
  * Assinatura estável de "o compartilhamento de arquivos do docker sandbox não
  * conseguiu ser construído" (issue #24/#26): tipo de recurso + errno. A frase
  * de panic inteira em volta (`panic detected in openvmm: failed to resolve

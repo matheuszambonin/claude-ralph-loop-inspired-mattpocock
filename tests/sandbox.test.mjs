@@ -2,7 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { describeSandboxCreateFailure, allowHostLoopback, describeHostLoopbackOpened, HOST_LOOPBACK_CIDR, runClaudeStreaming } from "../src/sandbox.mjs";
+import {
+  describeSandboxCreateFailure,
+  allowHostLoopback,
+  describeHostLoopbackOpened,
+  HOST_LOOPBACK_CIDR,
+  runClaudeStreaming,
+  describeWorkspacesOutsideLocalDisk,
+  collectHostVolumes,
+} from "../src/sandbox.mjs";
 
 const VIRTIOFS_PANIC =
   "create runtime: create/start VM: POST VM create failed: status 500:\n" +
@@ -177,4 +185,116 @@ test("runClaudeStreaming: `abortWhen` corta a iteração como o teto corta, e di
   assert.equal(res.timedOut, false);
   assert.deepEqual(child.signals, ["SIGTERM"]);
   assert.notEqual(res.code, 0);
+});
+
+// --- volumes dos workspaces do sandbox (issue #27) ---
+
+const LOCAL = { letter: "C", fileSystem: "NTFS", label: "" };
+const DRIVE = { letter: "G", fileSystem: "FAT32", label: "matheus@exemplo.com" };
+
+test("describeWorkspacesOutsideLocalDisk: sem fatos colhidos, nenhuma linha — é o caso de Linux, macOS e o da sonda que não conseguiu", () => {
+  assert.deepEqual(describeWorkspacesOutsideLocalDisk(["C:\\repo"], []), []);
+  assert.deepEqual(describeWorkspacesOutsideLocalDisk(["C:\\repo"], null), []);
+  assert.deepEqual(describeWorkspacesOutsideLocalDisk(["C:\\repo"], undefined), []);
+});
+
+test("describeWorkspacesOutsideLocalDisk: todos os workspaces em disco local, nenhuma linha — a saída do doctor fica idêntica à de hoje", () => {
+  const mounts = ["C:\\repo", "C:\\Users\\x\\.claude\\plugins:ro", "C:\\Tools\\Ralph:ro"];
+  assert.deepEqual(describeWorkspacesOutsideLocalDisk(mounts, [LOCAL, DRIVE]), []);
+});
+
+test("describeWorkspacesOutsideLocalDisk: volume com sistema de arquivos inesperado cita a letra, o sistema de arquivos e o rótulo", () => {
+  const [line, ...rest] = describeWorkspacesOutsideLocalDisk(["G:\\repo"], [LOCAL, DRIVE]);
+  assert.deepEqual(rest, []);
+  assert.match(line, /G:/);
+  assert.match(line, /FAT32/);
+  assert.match(line, /matheus@exemplo\.com/);
+  assert.match(line, /NTFS/);
+});
+
+test("describeWorkspacesOutsideLocalDisk: a linha relata o que foi colhido e não afirma que a criação do sandbox vai falhar", () => {
+  const [line] = describeWorkspacesOutsideLocalDisk(["G:\\repo"], [DRIVE]);
+  assert.doesNotMatch(line, /vai falhar|falhará|não vai funcionar|não funcionará|não vai dar|impossível/i);
+  // O tom pelo lado positivo, para uma reescrita futura não passar batida: o
+  // que se afirma é o que já foi observado, e a conclusão fica condicionada.
+  assert.match(line, /já foi observado/);
+  assert.match(line, /Se for esse o caso/);
+});
+
+test("describeWorkspacesOutsideLocalDisk: cobre todos os workspaces, não só o repositório alvo", () => {
+  const mounts = ["C:\\repo", "G:\\Meu Drive\\plugins:ro", "C:\\Tools\\Ralph:ro"];
+  const [line, ...rest] = describeWorkspacesOutsideLocalDisk(mounts, [LOCAL, DRIVE]);
+  assert.deepEqual(rest, []);
+  assert.match(line, /G:/);
+});
+
+test("describeWorkspacesOutsideLocalDisk: um volume suspeito produz uma linha só, mesmo com vários workspaces nele", () => {
+  const lines = describeWorkspacesOutsideLocalDisk(["G:\\repo", "G:\\plugins:ro", "I:\\extra"], [
+    DRIVE,
+    { letter: "I", fileSystem: "FAT32", label: "outra conta" },
+  ]);
+  assert.equal(lines.length, 2);
+});
+
+test("describeWorkspacesOutsideLocalDisk: volume com campos ausentes ou vazios não quebra a montagem da linha", () => {
+  const [line] = describeWorkspacesOutsideLocalDisk(["G:\\repo"], [{ letter: "G", fileSystem: "FAT32" }]);
+  assert.match(line, /G:/);
+  assert.match(line, /FAT32/);
+  assert.doesNotMatch(line, /undefined|null/);
+
+  assert.deepEqual(describeWorkspacesOutsideLocalDisk(["G:\\repo"], [{ letter: "G", fileSystem: "", label: "" }]), []);
+  assert.deepEqual(describeWorkspacesOutsideLocalDisk(["G:\\repo"], [{}, null, "lixo"]), []);
+});
+
+test("describeWorkspacesOutsideLocalDisk: mounts ausentes ou sem letra de volume não quebram", () => {
+  assert.deepEqual(describeWorkspacesOutsideLocalDisk(null, [DRIVE]), []);
+  assert.deepEqual(describeWorkspacesOutsideLocalDisk(["/home/x/repo", "", null], [DRIVE]), []);
+});
+
+test("describeWorkspacesOutsideLocalDisk: a letra do workspace casa com a do volume sem depender de caixa", () => {
+  const [line] = describeWorkspacesOutsideLocalDisk(["g:\\repo"], [{ letter: "g", fileSystem: "exFAT", label: "" }]);
+  assert.match(line, /exFAT/);
+});
+
+test("describeWorkspacesOutsideLocalDisk: `letter` vale tanto como letra crua quanto como DeviceID do Windows", () => {
+  const [comLetra] = describeWorkspacesOutsideLocalDisk(["G:\\repo"], [{ letter: "G", fileSystem: "FAT32", label: "" }]);
+  const [comDeviceId] = describeWorkspacesOutsideLocalDisk(["G:\\repo"], [{ letter: "G:", fileSystem: "FAT32", label: "" }]);
+  assert.equal(comLetra, comDeviceId);
+});
+
+test("collectHostVolumes: fora do Windows não colhe nada e não roda processo nenhum", async () => {
+  let called = false;
+  const volumes = await collectHostVolumes({
+    platform: "linux",
+    execImpl: async () => ((called = true), { stdout: "[]" }),
+  });
+  assert.deepEqual(volumes, []);
+  assert.equal(called, false);
+});
+
+test("collectHostVolumes: PowerShell ausente, timeout ou política de execução viram ausência de fatos, não exceção", async () => {
+  const boom = async () => {
+    throw new Error("spawn powershell.exe ENOENT");
+  };
+  assert.deepEqual(await collectHostVolumes({ platform: "win32", execImpl: boom }), []);
+});
+
+test("collectHostVolumes: JSON inválido vira ausência de fatos, não exceção", async () => {
+  const noise = async () => ({ stdout: "Get-CimInstance : Acesso negado\n" });
+  assert.deepEqual(await collectHostVolumes({ platform: "win32", execImpl: noise }), []);
+});
+
+test("collectHostVolumes: normaliza a saída do PowerShell, inclusive o objeto solto de um volume só", async () => {
+  const one = async () => ({ stdout: JSON.stringify({ DeviceID: "G:", FileSystem: "FAT32", VolumeName: "conta" }) });
+  assert.deepEqual(await collectHostVolumes({ platform: "win32", execImpl: one }), [
+    { letter: "G", fileSystem: "FAT32", label: "conta" },
+  ]);
+});
+
+test("collectHostVolumes: campos ausentes na saída viram string vazia, nunca undefined", async () => {
+  const partial = async () => ({ stdout: JSON.stringify([{ DeviceID: "C:" }, { FileSystem: "NTFS" }]) });
+  assert.deepEqual(await collectHostVolumes({ platform: "win32", execImpl: partial }), [
+    { letter: "C", fileSystem: "", label: "" },
+    { letter: "", fileSystem: "NTFS", label: "" },
+  ]);
 });

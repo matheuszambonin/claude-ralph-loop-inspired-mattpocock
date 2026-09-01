@@ -23,7 +23,17 @@ container — o repositório alvo, os plugins do host, a raiz de instalação do
 Ralph, os mounts extras. Não é o **repositório alvo**: este é só um dos
 workspaces montados. Onde a mensagem ou o teste falam do diretório montado em
 si, não do que ele contém, o termo é este.
-_Avoid_: volume, bind mount, ponto de montagem
+_Avoid_: volume (a unidade de disco do host é **volume do host**), bind mount,
+ponto de montagem
+
+**Volume do host**:
+A unidade de disco do Windows onde um ou mais **workspaces do sandbox** vivem,
+identificada pela letra (`C:`, `G:`) e pelo sistema de arquivos que reporta.
+Não é o workspace: vários workspaces cabem no mesmo volume, e é o volume — não
+o diretório — que decide se o compartilhamento de arquivos do `docker sandbox`
+consegue ser construído. Só tem sentido no Windows, a única plataforma onde há
+letra de volume.
+_Avoid_: unidade, drive, partição
 
 **Configuração executável do alvo**:
 O que o repositório alvo carrega e que o git ou o Claude Code rodam sozinhos,
