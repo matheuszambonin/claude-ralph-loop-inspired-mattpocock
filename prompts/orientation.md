@@ -27,6 +27,13 @@ From the issue tracker, find the first ticket on the frontier: state
 another iteration. Prefer risky work — architecture, integration points,
 unknowns — over polish.
 
+The frontier is closed. A ticket without that state is out of it and nothing
+puts it back: not reconciling what an earlier iteration left half done, not
+decomposing something bigger, not a ticket whose body reads ready to you, not
+any reason you can write. An empty frontier is an answer, not a failure. Report
+`complete` with an empty `TICKET`, or `blocked` when open tickets exist and
+each one waits on something this loop cannot do, triage included.
+
 The state of a ticket is what a query for that ticket returns. Prose about a
 ticket, in another issue's body or in any comment, was true when someone wrote
 it and nothing revisits it when the ticket closes; that is a lead to go check,
@@ -49,7 +56,8 @@ TICKET: <id and title — empty when STATUS is complete or blocked>
 CLAIM: <the exact shell command that claims TICKET on this repo's tracker,
 straight from docs/agents/issue-tracker.md, with the ticket id already in it —
 empty when the document prescribes no claim, or when STATUS isn't ready. Never
-invent one.>
+invent one, and never a command that applies a triage label — that promotes
+the ticket onto the frontier, it does not claim it.>
 WHY: <one paragraph: why this ticket, or why the frontier is empty or blocked>
 CONTEXT: <bullet list of facts the iteration needs and can't cheaply
 rediscover — file paths, prior decisions from PROGRESS.md or the ADRs,

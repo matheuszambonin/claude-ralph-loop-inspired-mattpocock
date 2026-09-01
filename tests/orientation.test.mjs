@@ -257,3 +257,37 @@ test("orientation.md: o estado de um ticket vem da consulta a ele, e o resumo de
   assert.match(rule, /CONTEXT/);
   assert.match(rule, /this iteration/i);
 });
+
+/**
+ * Issue #81: com `gh issue list --state open --label ready-for-agent` devolvendo
+ * `[]`, duas rodadas seguidas no Terraços saíram com `STATUS: ready` apontando
+ * ticket de fora do frontier. Na de `ornith:9b` foi a `#12`, sem rótulo nenhum,
+ * "por reconciliação"; na de `qwen3-coder:30b`, a `#21`, que é
+ * `ready-for-human`. O prompt definia o frontier e oferecia `complete` e
+ * `blocked` logo abaixo, mas nenhuma linha dizia que ticket de fora está fora.
+ */
+test("orientation.md: o frontier é fechado, e frontier vazio sai como complete ou blocked", () => {
+  const paragraphs = readOrientationTemplate().split(/\n\s*\n/);
+  const rule = paragraphs.find((p) => /frontier is closed/i.test(p));
+  assert.ok(rule, "nenhum parágrafo diz que o frontier é fechado");
+  // As duas justificativas que as rodadas inventaram, nomeadas.
+  assert.match(rule, /reconcil/i);
+  assert.match(rule, /decompos/i);
+  // Frontier vazio é resposta: os dois estados e o `TICKET` vazio.
+  assert.match(rule, /`complete`/);
+  assert.match(rule, /`blocked`/);
+  assert.match(rule, /empty\s+`TICKET`/);
+});
+
+/**
+ * Issue #81, o outro lado: o `CLAIM:` da rodada de `qwen3-coder:30b` foi
+ * `gh issue edit 21 --add-label "ready-for-agent"`, o comando que aplica o
+ * rótulo que faltava. O "Never invent one" não alcançava isso — o comando é
+ * plausível, e é o próprio frontier que ele fabrica.
+ */
+test("orientation.md: o CLAIM nunca é o comando que aplica rótulo de triagem", () => {
+  const orientation = readOrientationTemplate();
+  const claim = orientation.match(/^CLAIM:[\s\S]*?(?=^WHY:)/m);
+  assert.ok(claim, "o bloco de contrato não descreve o campo CLAIM");
+  assert.match(claim[0], /triage label/i);
+});

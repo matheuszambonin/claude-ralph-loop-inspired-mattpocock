@@ -258,3 +258,18 @@ test("todo prompt de iteração pede a assinatura, e ela é a mesma em todos", (
     assert.match(templates[name], /\{\{SIGNATURE\}\}/, `${name} não pede a assinatura`);
   }
 });
+
+/**
+ * Issue #81: a Orientação compôs `CLAIM: gh issue edit 21 --add-label
+ * "ready-for-agent"` e a iteração rodou. Do lado de lá o prompt agora proíbe
+ * compor esse comando; do lado de cá, rodá-lo. As duas linhas são da exceção
+ * que o CLAUDE.md guarda: proíbem o que o sandbox permite tecnicamente.
+ */
+test("implement.md: um CLAIM que aplica rótulo de triagem não é rodado", () => {
+  const step = readIterationTemplates()
+    .implement.split(/\n\s*\n/)
+    .find((p) => /^- `STATUS: ready`/m.test(p));
+  assert.ok(step, "o passo 2 não trata `STATUS: ready`");
+  assert.match(step, /triage label/i);
+  assert.match(step, /BLOCKED_PROMISE/);
+});
