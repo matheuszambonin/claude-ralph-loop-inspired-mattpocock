@@ -9,6 +9,7 @@ import {
   formatOrientationMissWarning,
   formatOrientationLoop,
   ORIENTATION_LOOP_LIMIT,
+  ORIENTATION_TARGET_LOOP_LIMIT,
 } from "../src/stream.mjs";
 
 function feed(renderer, evt) {
@@ -519,6 +520,77 @@ test("formatOrientationLoop: nomeia o comando repetido e quantas vezes", () => {
   assert.match(line, /240/);
   assert.match(line, /gh issue view 16/);
   assert.match(line, /Orientação/);
+});
+
+const PROGRESS = "/c/repo/.ralph/PROGRESS.md";
+
+test("createStreamRenderer: a Orientação que anda o offset no mesmo arquivo vira laço (issue #75)", () => {
+  // O laço de 01/09/2026: Reads do mesmo PROGRESS.md com o offset andando de
+  // dois em dois. Nenhuma chamada idêntica chega perto do teto da #74 — a
+  // repetição máxima por input inteiro foi 5.
+  const PAGES = 8;
+  const state = repeat(ORIENTATION_TARGET_LOOP_LIMIT + PAGES, (i) =>
+    orientationTool(`c${i}`, "Read", { file_path: PROGRESS, offset: 250 + (i % PAGES) * 2 })
+  );
+  assert.equal(state.orientationLoop?.kind, "same-target");
+  assert.equal(state.orientationLoop?.count, ORIENTATION_TARGET_LOOP_LIMIT);
+  assert.equal(state.orientationLoop?.tool, "Read");
+  assert.match(state.orientationLoop?.detail, /PROGRESS\.md/);
+});
+
+test("createStreamRenderer: a leitura paginada legítima não é laço (issue #75)", () => {
+  // A iteração das 21:21 de 28/08/2026 fechou com `result: success` depois de
+  // 186 Reads do mesmo arquivo — páginas distintas, mais nove que ela releu.
+  // Página nova não conta nada; as nove releituras ficam abaixo do teto grosso.
+  const LOCATE = "/c/repo/terracos/processing/locate.py";
+  const renderer = createStreamRenderer();
+  for (let i = 0; i < 200; i++) {
+    feed(renderer, orientationTool(`p${i}`, "Read", { file_path: LOCATE, offset: 1400 - i * 10, limit: 30 }));
+  }
+  for (let i = 0; i < 9; i++) {
+    feed(renderer, orientationTool(`r${i}`, "Read", { file_path: LOCATE, offset: 1400 - i * 10, limit: 30 }));
+  }
+  assert.equal(renderer.end().orientationLoop, null);
+});
+
+test("createStreamRenderer: a repetição idêntica continua sendo o laço da #74, não o do alvo", () => {
+  // Repetir a chamada idêntica também acumula releitura do alvo, e o corte
+  // sairia pelos dois. Quem responde é o teto fino: ele estoura antes e diz
+  // com precisão o que o modelo repetiu.
+  const state = repeat(ORIENTATION_TARGET_LOOP_LIMIT + 10, (i) => orientationTool(`c${i}`, "Bash", VIEW_16));
+  assert.equal(state.orientationLoop?.kind, "same-input");
+  assert.equal(state.orientationLoop?.count, ORIENTATION_TARGET_LOOP_LIMIT + 10);
+});
+
+test("createStreamRenderer: o laço por alvo cede ao laço por chamada dentro do mesmo chunk", () => {
+  // O `abortWhen` de `runClaudeStreaming` roda depois de cada chunk, e um chunk
+  // traz vários `tool_use`: dá para o teto grosso estourar e o fino estourar
+  // logo atrás, com contagem menor. Quem responde é o fino.
+  const renderer = createStreamRenderer();
+  for (let volta = 0; volta < 2; volta++) {
+    for (let i = 0; i <= ORIENTATION_TARGET_LOOP_LIMIT; i++) {
+      feed(renderer, orientationTool(`p${volta}-${i}`, "Read", { file_path: PROGRESS, offset: i }));
+    }
+  }
+  assert.equal(renderer.state.orientationLoop?.kind, "same-target");
+  for (let i = 0; i < ORIENTATION_LOOP_LIMIT; i++) feed(renderer, orientationTool(`b${i}`, "Bash", VIEW_16));
+  const loop = renderer.end().orientationLoop;
+  assert.equal(loop?.kind, "same-input");
+  assert.equal(loop?.count, ORIENTATION_LOOP_LIMIT);
+});
+
+test("formatOrientationLoop: o laço que anda o argumento nomeia a ferramenta e o alvo", () => {
+  const line = formatOrientationLoop({ kind: "same-target", tool: "Read", detail: PROGRESS, count: 25 });
+  assert.match(line, /25/);
+  assert.match(line, /Read/);
+  assert.match(line, /PROGRESS\.md/);
+});
+
+test("formatOrientationLoop: a repetição idêntica mantém a linha da #74, palavra por palavra", () => {
+  assert.equal(
+    formatOrientationLoop({ tool: "Bash", detail: "gh issue view 16 --json state", count: 240 }),
+    "a Orientação repetiu 240x o mesmo Bash (gh issue view 16 --json state) — laço fechado"
+  );
 });
 
 test("formatOrientationLoop: sem laço, nenhuma linha", () => {

@@ -60,6 +60,27 @@ function describeTool(name, input = {}) {
  */
 export const ORIENTATION_LOOP_LIMIT = 10;
 
+/**
+ * Quantas chamadas já feitas a Orientação pode refazer no mesmo alvo — a mesma
+ * ferramenta sobre o mesmo arquivo, comando ou padrão — antes de o Ralph
+ * chamar aquilo de laço (issue #75). Teto próprio, e mais alto, porque a chave
+ * é mais grossa: o laço de 01/09/2026 andava o `offset` de dois em dois sobre
+ * o mesmo `PROGRESS.md`, e nenhuma chamada idêntica passou de 5.
+ *
+ * Vinte e cinco fica entre as duas pontas medidas nos 20 logs reais em que
+ * a Orientação chegou a usar ferramenta: o pior
+ * caso legítimo é a iteração das 21:21 de 28/08/2026, que releu 9 páginas de
+ * um arquivo de 1400 linhas e ainda assim entregou; o laço do dia 01/09 refez
+ * 60. Contar só a chamada refeita é o que separa os dois — a mesma iteração
+ * das 21:21 leu 186 páginas distintas do arquivo, e página nova não conta.
+ *
+ * O preço disso é a deriva que nunca volta atrás: um `offset` estritamente
+ * crescente não refaz chamada nenhuma e passa por fora. Não há como separá-la
+ * da leitura paginada legítima com o que o log traz — a iteração das 21:21 é
+ * exatamente uma caminhada dessas, e entregou.
+ */
+export const ORIENTATION_TARGET_LOOP_LIMIT = 25;
+
 export function createStreamRenderer({ onEvent } = {}) {
   const state = {
     text: "",
@@ -103,16 +124,49 @@ export function createStreamRenderer({ onEvent } = {}) {
   // era consecutiva, e ninguém saía do lugar do mesmo jeito.
   const orientationTools = new Map();
 
+  // Quantas chamadas já feitas a Orientação refez em cada alvo (issue #75). A
+  // chave é a ferramenta mais o alvo — o `detail` que a linha do stream já
+  // mostra —, e só entra a chamada cujo input inteiro repete um anterior: ler
+  // uma página nova do mesmo arquivo não conta, e é isso que deixa a leitura
+  // paginada legítima passar.
+  const orientationTargets = new Map();
+
   function countOrientationTool(block, detail) {
     const key = `${block.name}
 ${JSON.stringify(block.input ?? {})}`;
     const count = (orientationTools.get(key) ?? 0) + 1;
     orientationTools.set(key, count);
-    // O pior comando responde pela iteração: reportar o primeiro a estourar
-    // esconderia o que de fato dominou o laço.
-    if (count >= ORIENTATION_LOOP_LIMIT && count > (state.orientationLoop?.count ?? 0)) {
-      state.orientationLoop = { tool: block.name, detail, count };
+    if (count >= ORIENTATION_LOOP_LIMIT) {
+      recordLoop("same-input", block.name, detail, count);
+      return;
     }
+    // Sem `detail` o alvo seria a ferramenta pelada, e aí todo `Read` da
+    // iteração viraria um alvo só.
+    if (count === 1 || !detail) return;
+    const targetKey = `${block.name}
+${detail}`;
+    const redone = (orientationTargets.get(targetKey) ?? 0) + 1;
+    orientationTargets.set(targetKey, redone);
+    if (redone >= ORIENTATION_TARGET_LOOP_LIMIT) recordLoop("same-target", block.name, detail, redone);
+  }
+
+  /**
+   * O pior comando responde pela iteração (issue #74): reportar o primeiro a
+   * estourar esconderia o que de fato dominou o laço. A comparação é dentro do
+   * mesmo `kind`, porque as duas contagens não medem a mesma coisa — uma é
+   * repetição de uma chamada, a outra é chamada refeita num alvo — e o teto
+   * fino ganha do grosso: quem repete `gh issue view 16` merece ler isso, e
+   * não "refez 25 chamadas de Bash".
+   *
+   * Nada disso seria alcançável se o `abortWhen` de `runClaudeStreaming`
+   * cortasse na primeira detecção, mas ele roda depois de cada chunk, e um
+   * chunk traz vários `tool_use`.
+   */
+  function recordLoop(kind, tool, detail, count) {
+    const current = state.orientationLoop;
+    if (current?.kind === "same-input" && kind !== "same-input") return;
+    if (current?.kind === kind && count <= current.count) return;
+    state.orientationLoop = { kind, tool, detail, count };
   }
 
   function handle(evt) {
@@ -393,5 +447,8 @@ export { C as colors, paint };
 export function formatOrientationLoop(loop) {
   if (!loop) return "";
   const detail = loop.detail ? ` (${loop.detail})` : "";
+  if (loop.kind === "same-target") {
+    return `a Orientação refez ${loop.count} chamadas de ${loop.tool}${detail} que já tinha feito — laço fechado`;
+  }
   return `a Orientação repetiu ${loop.count}x o mesmo ${loop.tool}${detail} — laço fechado`;
 }
