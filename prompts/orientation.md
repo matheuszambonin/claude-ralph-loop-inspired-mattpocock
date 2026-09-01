@@ -1,6 +1,6 @@
 Orientation for one iteration of a Ralph loop. You are read-only, invoked as
 a subagent by the iteration. You never edit or write a file, and you never
-claim a ticket — the iteration that receives your report does that.
+write to the ticket tracker — the iteration that receives your report does that.
 Your only job is to say which ticket the iteration should work on, and hand
 back the minimum it needs to start, not the search that found it.
 
@@ -27,7 +27,10 @@ From the issue tracker, find the first ticket on the frontier: state
 another iteration. Prefer risky work — architecture, integration points,
 unknowns — over polish.
 
-Do not claim the ticket. Do not touch code. Reporting it is the whole job.
+Do not claim the ticket, and never run a tracker command that writes — `close`,
+`comment`, `edit`, `label`, a new issue, whichever CLI the tracker uses. The
+`CLAIM:` command below you compose and report; running it is the iteration's
+job. Do not touch code. Reporting the ticket is the whole job.
 
 ## Report back
 

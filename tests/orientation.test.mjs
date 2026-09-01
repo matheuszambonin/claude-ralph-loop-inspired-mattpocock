@@ -214,3 +214,18 @@ test("delegatesOrientation: o implement.md distribuído delega", () => {
   const implement = readFileSync(path.join(ralphHome(), "prompts", "implement.md"), "utf8");
   assert.equal(delegatesOrientation(implement), true);
 });
+
+/**
+ * Issue #77: numa iteração real a Orientação rodou `gh issue close` em dois
+ * tickets do alvo. O prompt só proibia `claim`, e a whitelist não alcança isso
+ * — ela precisa de `Bash` para o `gh issue list`, e `close`, `comment`, `edit`
+ * e `label` passam pelo mesmo binário. A linha do prompt é o que segura.
+ */
+test("orientation.md: a proibição de escrever no tracker nomeia os verbos, não só claim", () => {
+  const paragraphs = readOrientationTemplate().split(/\n\s*\n/);
+  const denial = paragraphs.find((p) => /Do not claim the ticket/.test(p));
+  assert.ok(denial, "nenhum parágrafo proíbe escrever no tracker");
+  for (const verb of ["claim", "close", "comment", "edit", "label"]) {
+    assert.ok(denial.includes(verb), `o prompt não proíbe '${verb}'`);
+  }
+});
