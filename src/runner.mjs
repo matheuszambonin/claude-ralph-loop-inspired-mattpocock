@@ -436,7 +436,10 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     state,
     logPath: jsonl,
     complete: foundPromise(state, cfg.completionPromise),
-    blocked: foundPromise(state, cfg.blockedPromise),
+    // Só o bloqueio vale pensado (issue #70): o modelo pequeno anuncia a
+    // promise no raciocínio e entrega texto sem a tag, e o desfecho de errar
+    // para mais é chamar um humano que a promise ia chamar de qualquer jeito.
+    blocked: foundPromise(state, cfg.blockedPromise, { includeThinking: true }),
   };
 }
 

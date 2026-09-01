@@ -8,6 +8,7 @@ import {
   formatSkillFailureWarning,
   formatOrientationMissWarning,
   formatStuckLoop,
+  foundPromise,
   ORIENTATION_LOOP_LIMIT,
   MAIN_LOOP_LIMIT,
   ORIENTATION_TARGET_LOOP_LIMIT,
@@ -664,4 +665,74 @@ test("formatStuckLoop: o laço do principal nomeia o processo principal, não a 
     formatStuckLoop({ phase: "main", tool: "Bash", detail: "git log --oneline -5", count: 20 }),
     "o processo principal repetiu 20x o mesmo Bash (git log --oneline -5) — laço fechado"
   );
+});
+
+/** Um turno de raciocínio, do processo principal ou de um subagente. */
+function thinkingTurn(thinking, subagentType) {
+  const evt = {
+    type: "assistant",
+    message: { role: "assistant", model: "ornith:9b", content: [{ type: "thinking", thinking }] },
+  };
+  if (subagentType) evt.subagent_type = subagentType;
+  return evt;
+}
+
+test("foundPromise: a promise que a iteração só pensou é encontrada (issue #70)", () => {
+  // A corrida de 01/09/2026 contra `ornith:9b`, num alvo sem issue tracker,
+  // palavra por palavra: o raciocínio anuncia a promise e o texto final sai
+  // sem ela.
+  const renderer = createStreamRenderer();
+  feed(
+    renderer,
+    thinkingTurn(
+      "The repository is a test repo with only a README commit.\n\n" +
+        "I should emit `<promise>BLOCKED</promise>` with a clear explanation."
+    )
+  );
+  feed(renderer, {
+    type: "result",
+    subtype: "success",
+    result: "The repository contains only a single commit (README). There's nothing to implement.",
+  });
+  const state = renderer.end();
+  assert.equal(foundPromise(state, "BLOCKED", { includeThinking: true }), true);
+});
+
+test("foundPromise: sem includeThinking, a promise pensada não conta (issue #70)", () => {
+  // O padrão é o de antes da #70, e é ele que `runIteration` usa para
+  // `COMPLETE`: o passo 2 do prompt lista as duas tags, e um "não é
+  // <promise>COMPLETE</promise>" pensado fecharia a noite como sucesso.
+  const renderer = createStreamRenderer();
+  feed(renderer, thinkingTurn("STATUS is ready, so this is not <promise>COMPLETE</promise>."));
+  const state = renderer.end();
+  assert.equal(foundPromise(state, "COMPLETE"), false);
+});
+
+test("foundPromise: o raciocínio da Orientação não emite promise pela iteração (issue #70)", () => {
+  // O prompt do subagente cita a promise para dizer que emiti-la é papel da
+  // iteração — o raciocínio dele sobre ela não pode parar o loop.
+  const renderer = createStreamRenderer();
+  feed(renderer, thinkingTurn("The iteration should emit <promise>BLOCKED</promise>.", "orientation"));
+  const state = renderer.end();
+  assert.equal(foundPromise(state, "BLOCKED", { includeThinking: true }), false);
+});
+
+test("foundPromise: nem o do subagente que o agente delega sozinho (issue #70)", () => {
+  // O `general-purpose` que o Claude Code dispara por conta própria não viu o
+  // passo 2 do prompt da iteração, e o que ele pensa não fala por ela.
+  const renderer = createStreamRenderer();
+  feed(renderer, thinkingTurn("Nothing here. <promise>BLOCKED</promise>", "general-purpose"));
+  const state = renderer.end();
+  assert.equal(foundPromise(state, "BLOCKED", { includeThinking: true }), false);
+});
+
+test("foundPromise: a promise escrita como texto continua contando", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "text", text: "Backlog vazio. <promise>COMPLETE</promise>" }] },
+  });
+  const state = renderer.end();
+  assert.equal(foundPromise(state, "COMPLETE"), true);
+  assert.equal(foundPromise(state, "BLOCKED", { includeThinking: true }), false);
 });

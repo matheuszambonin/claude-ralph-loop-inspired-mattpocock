@@ -70,6 +70,13 @@ backlog pequeno, 30–50 para grande. Termina quando o agente emite
 `<promise>COMPLETE</promise>` (backlog vazio), `<promise>BLOCKED</promise>`
 (precisa de um humano) ou quando o teto de iterações é atingido.
 
+O bloqueio vale mesmo quando o agente só o pensou: um modelo pequeno escreve
+"I should emit `<promise>BLOCKED</promise>`" enquanto raciocina e entrega um
+texto final sem a tag, e a noite inteira se vai reencontrando o mesmo backlog
+vazio. `COMPLETE` continua exigindo a tag no texto: o prompt lista as duas, e
+um "não é `<promise>COMPLETE</promise>`" pensado fecharia a noite como sucesso
+sobre um backlog cheio.
+
 Comece sempre HITL, refine o prompt, só então vá AFK.
 
 ## Como uma iteração funciona

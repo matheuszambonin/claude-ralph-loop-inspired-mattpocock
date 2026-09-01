@@ -105,6 +105,7 @@ export const MAIN_LOOP_LIMIT = 20;
 export function createStreamRenderer({ onEvent } = {}) {
   const state = {
     text: "",
+    thinking: "",
     finalResult: null,
     costUsd: 0,
     turns: 0,
@@ -282,6 +283,13 @@ ${detail}`;
               `${paint(C.cyan, "⚙")} ${paint(C.bold, block.name)}${detail ? paint(C.dim, "  " + detail) : ""}\n`
             );
           } else if (block.type === "thinking" && block.thinking?.trim()) {
+            // Só o raciocínio do processo principal entra no que `foundPromise`
+            // lê (issue #70): quem foi mandado emitir a promise é a iteração, e
+            // nenhum subagente fala por ela. O da Orientação porque o prompt
+            // dela cita a promise justamente para dizer que emiti-la não é
+            // papel dela; o do `general-purpose` que o agente delega sozinho
+            // porque ele nem viu o passo 2 do prompt da iteração.
+            if (!evt.subagent_type) state.thinking += block.thinking + "\n";
             const preview = block.thinking.trim().split("\n")[0].slice(0, 100);
             process.stdout.write(paint(C.dim, `  ⋯ ${preview}\n`));
           }
@@ -375,9 +383,33 @@ ${detail}`;
   return { write, end, state };
 }
 
-/** Procura <promise>VALOR</promise> em todo o texto produzido pela iteração. */
-export function foundPromise(state, promise) {
-  const haystack = `${state.text}\n${state.finalResult ?? ""}`;
+/**
+ * Procura <promise>VALOR</promise> no texto produzido pela iteração.
+ *
+ * `includeThinking` estende a busca ao raciocínio, e entra por medição (issue
+ * #70): em 01/09/2026, num alvo sem issue tracker, `ornith:9b` recebeu
+ * `STATUS: blocked` da Orientação, escreveu "I should emit
+ * `<promise>BLOCKED</promise>` with a clear explanation" enquanto pensava, e
+ * devolveu um texto final sem a tag. `runLoop` não achou a promise, e um
+ * `ralph afk` ali queimaria o teto de iterações inteiro reencontrando o mesmo
+ * repositório vazio.
+ *
+ * É o oposto da decisão do canário (issue #64), que lê só o texto de propósito,
+ * e as duas estão certas: lá o modelo cita as duas senhas enquanto pensa, e
+ * aceitar isso apagaria a distinção que a prova faz; aqui a tag é literal e só
+ * quem foi mandado emiti-la a escreve.
+ *
+ * Opcional, e não ligado sozinho, porque o preço das duas promises é diferente.
+ * O passo 2 de `prompts/implement.md` lista as duas tags, então o modelo que
+ * recita o passo enquanto pensa escreve as duas: aceitar `COMPLETE` do
+ * raciocínio fecharia a noite com "backlog concluído" sobre um backlog cheio,
+ * e ninguém vai conferir de manhã o que saiu como sucesso. Um `BLOCKED` a mais
+ * para cedo custa uma iteração e chama o humano, que é o desfecho que ele
+ * pede de qualquer jeito. Quem liga é `runIteration`, na promise de bloqueio.
+ */
+export function foundPromise(state, promise, { includeThinking = false } = {}) {
+  const thinking = includeThinking ? `\n${state.thinking}` : "";
+  const haystack = `${state.text}${thinking}\n${state.finalResult ?? ""}`;
   return haystack.includes(`<promise>${promise}</promise>`);
 }
 
