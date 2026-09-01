@@ -17,6 +17,7 @@ import {
   mountsFor,
   collectHostVolumes,
   describeWorkspacesOutsideLocalDisk,
+  describeSandboxGh,
 } from "./sandbox.mjs";
 import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth, reportIterationTimeout, reportStuckLoop } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
@@ -329,6 +330,13 @@ async function cmdDoctor(flags) {
     gh.stdout.includes("Logged in")
       ? ok("gh autenticado no sandbox")
       : bad("gh NÃO autenticado no sandbox — rode 'ralph gh-login' (o tracker deste repo usa GitHub)");
+
+    // Autenticado não basta: o `gh` da imagem do template reprova ao ler a
+    // issue (issue #80). Dentro da mesma guarda do tracker porque a pergunta é
+    // a mesma — este repo depende do `gh` para saber o que fazer?
+    const version = await execCapture(cfg.sandboxName, ["bash", "-lc", "gh --version 2>&1 | head -1"]);
+    const ghVersion = describeSandboxGh(version.stdout);
+    if (ghVersion) (ghVersion.level === "ok" ? ok : warn)(ghVersion.message);
   }
   process.stdout.write("\n");
 }

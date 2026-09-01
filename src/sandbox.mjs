@@ -450,3 +450,60 @@ export const inContainer = toContainerPath;
 export function bootstrapScriptPath() {
   return toContainerPath(path.join(ralphHome(), "sandbox", "bootstrap.sh"));
 }
+
+/**
+ * Primeira versão do `gh` que lê uma issue sem pedir `repository.issue.
+ * projectCards`, o campo que o GitHub aposentou junto com os Projects
+ * (classic). Abaixo dela `gh issue view <n> --comments` sai 1 com erro de
+ * GraphQL — e é esse o comando que `docs/agents/issue-tracker.md` prescreve
+ * para ler um ticket (issue #80). Apurado em cli/cli: o commit 5ec2160b
+ * ("Avoid requesting projectCards for issue view") está em v2.71.0 e não em
+ * v2.70.0.
+ */
+export const GH_MIN_VERSION = "2.71.0";
+
+/** [major, minor, patch] do primeiro `x.y.z` do texto; [] quando não há nenhum. */
+function versionTuple(value) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(typeof value === "string" ? value : "");
+  return m ? m.slice(1, 4).map(Number) : [];
+}
+
+/** Negativo, zero ou positivo, comparando número a número — "2.100" > "2.9". */
+function compareVersions(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+/**
+ * O que o `doctor` diz sobre o `gh` que existe dentro do sandbox, a partir da
+ * saída de `gh --version`. Pura: recebe texto, devolve `{ level, message }` —
+ * mesma forma de `describeDrift`.
+ *
+ * É aqui, e não no `bootstrap.sh`, que o piso é cobrado: a instalação lá não
+ * derruba o sandbox quando falha, então alguém precisa dizer depois se ela
+ * pegou. Vale também para os sandboxes criados antes desta issue — o bootstrap
+ * é carimbado, roda uma vez por sandbox, e nada no loop troca o `gh` sozinho.
+ * Sem esta linha o operador só descobre a versão velha pelo estrago: uma
+ * Orientação que não conseguiu ler o ticket e escreveu mesmo assim.
+ *
+ * Sem versão legível não sai linha nenhuma: `gh` ausente ou quebrado é o que a
+ * checagem de `gh auth status`, ao lado desta no `doctor`, já reprova — um
+ * segundo diagnóstico para o mesmo fato só duplicaria o barulho.
+ */
+export function describeSandboxGh(versionOutput) {
+  const seen = versionTuple(versionOutput);
+  if (!seen.length) return null;
+  const version = seen.join(".");
+  if (compareVersions(seen, versionTuple(GH_MIN_VERSION)) >= 0) {
+    return { level: "ok", message: `gh ${version} no sandbox` };
+  }
+  return {
+    level: "warn",
+    message:
+      `gh ${version} no sandbox, abaixo de ${GH_MIN_VERSION} — nessa faixa 'gh issue view <n> --comments'\n` +
+      "  reprova pedindo projectCards, campo que o GitHub aposentou, e a leitura de ticket morre lá dentro.\n" +
+      "  Rode 'ralph bootstrap --force' para instalar o gh do repositório oficial.",
+  };
+}

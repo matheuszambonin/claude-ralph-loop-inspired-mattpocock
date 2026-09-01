@@ -93,7 +93,7 @@ Comece sempre HITL, refine o prompt, só então vá AFK.
 ralph afk -n 20
    │
    ├─ garante o sandbox do repo (docker sandbox create)
-   ├─ bootstrap: copia ~/.claude/plugins para dentro, configura git
+   ├─ bootstrap: copia ~/.claude/plugins para dentro, instala o gh oficial, configura git
    ├─ recusa rodar em main/master sem --allow-branch
    │
    └─ para cada iteração, um processo claude -p novo:
@@ -414,7 +414,7 @@ arquivo já é a cópia fiel, e `preservado` quando há algo a reinstalar.
 | Comando | O que faz |
 |---|---|
 | `ralph init [--prompt <nome>] [--force]` | cria `.ralph/` no repo atual |
-| `ralph doctor [--night]` | checa docker, sandbox, plugins, login e fonte de tarefas (com `--night`, também o Provedor local) |
+| `ralph doctor [--night]` | checa docker, sandbox, plugins, login, versão do `gh` e fonte de tarefas (com `--night`, também o Provedor local) |
 | `ralph login [--share-credentials]` | autentica o Claude dentro do sandbox |
 | `ralph gh-login [--token[=valor]]` | autentica o `gh` dentro do sandbox |
 | `ralph once [--allow-branch] [--night]` | uma iteração (HITL) |

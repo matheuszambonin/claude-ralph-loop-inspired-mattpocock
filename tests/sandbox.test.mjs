@@ -10,6 +10,8 @@ import {
   runClaudeStreaming,
   describeWorkspacesOutsideLocalDisk,
   collectHostVolumes,
+  describeSandboxGh,
+  GH_MIN_VERSION,
 } from "../src/sandbox.mjs";
 
 const VIRTIOFS_PANIC =
@@ -297,4 +299,39 @@ test("collectHostVolumes: campos ausentes na saída viram string vazia, nunca un
     { letter: "C", fileSystem: "", label: "" },
     { letter: "", fileSystem: "NTFS", label: "" },
   ]);
+});
+
+const GH_UBUNTU = "gh version 2.46.0 (2025-12-13 Ubuntu 2.46.0-4)";
+const GH_OFICIAL = "gh version 2.98.0 (2026-08-20)";
+
+test("describeSandboxGh: o gh da imagem do Ubuntu é velho demais e o aviso diz o comando que conserta", () => {
+  const { level, message } = describeSandboxGh(GH_UBUNTU);
+  assert.equal(level, "warn");
+  assert.match(message, /2\.46\.0/);
+  assert.match(message, new RegExp(GH_MIN_VERSION.replace(/\./g, "\\.")));
+  assert.match(message, /projectCards/);
+  assert.match(message, /ralph bootstrap --force/);
+});
+
+test("describeSandboxGh: versão a partir do piso passa, e a linha nomeia a versão vista", () => {
+  const { level, message } = describeSandboxGh(GH_OFICIAL);
+  assert.equal(level, "ok");
+  assert.match(message, /2\.98\.0/);
+});
+
+test("describeSandboxGh: o piso é a primeira versão que corrigiu, não a seguinte", () => {
+  assert.equal(describeSandboxGh(`gh version ${GH_MIN_VERSION} (2025-04-23)`).level, "ok");
+  assert.equal(describeSandboxGh("gh version 2.70.9 (2025-04-22)").level, "warn");
+});
+
+test("describeSandboxGh: compara número a número, não texto a texto", () => {
+  assert.equal(describeSandboxGh("gh version 2.100.0 (2026-12-01)").level, "ok");
+  assert.equal(describeSandboxGh("gh version 10.0.0 (2027-01-01)").level, "ok");
+  assert.equal(describeSandboxGh("gh version 2.9.0 (2022-01-01)").level, "warn");
+});
+
+test("describeSandboxGh: sem versão legível não há fato para relatar, e nada é dito", () => {
+  assert.equal(describeSandboxGh(""), null);
+  assert.equal(describeSandboxGh("bash: gh: command not found"), null);
+  assert.equal(describeSandboxGh(undefined), null);
 });
