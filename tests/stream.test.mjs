@@ -7,8 +7,9 @@ import {
   formatOrientationWarning,
   formatSkillFailureWarning,
   formatOrientationMissWarning,
-  formatOrientationLoop,
+  formatStuckLoop,
   ORIENTATION_LOOP_LIMIT,
+  MAIN_LOOP_LIMIT,
   ORIENTATION_TARGET_LOOP_LIMIT,
 } from "../src/stream.mjs";
 
@@ -468,6 +469,14 @@ function orientationTool(id, name, input) {
   };
 }
 
+/** O mesmo turno, vindo do processo principal: o stream não marca `subagent_type`. */
+function mainTool(id, name, input) {
+  return {
+    type: "assistant",
+    message: { role: "assistant", model: "ornith:9b", content: [{ type: "tool_use", id, name, input }] },
+  };
+}
+
 function repeat(n, fn) {
   const renderer = createStreamRenderer();
   for (let i = 0; i < n; i++) feed(renderer, fn(i));
@@ -478,32 +487,29 @@ const VIEW_16 = { command: "gh issue view 16 --json number,title,state,labels" }
 
 test("createStreamRenderer: a Orientação que repete o mesmo tool_use vira laço (issue #74)", () => {
   const state = repeat(ORIENTATION_LOOP_LIMIT + 2, (i) => orientationTool(`c${i}`, "Bash", VIEW_16));
-  assert.equal(state.orientationLoop?.count, ORIENTATION_LOOP_LIMIT + 2);
-  assert.equal(state.orientationLoop?.tool, "Bash");
-  assert.match(state.orientationLoop?.detail, /gh issue view 16/);
+  assert.equal(state.stuckLoop?.count, ORIENTATION_LOOP_LIMIT + 2);
+  assert.equal(state.stuckLoop?.tool, "Bash");
+  assert.match(state.stuckLoop?.detail, /gh issue view 16/);
 });
 
 test("createStreamRenderer: a Orientação que lê muita coisa diferente não é laço", () => {
   const state = repeat(ORIENTATION_LOOP_LIMIT * 3, (i) =>
     orientationTool(`c${i}`, "Bash", { command: `gh issue view ${i} --json state` })
   );
-  assert.equal(state.orientationLoop, null);
+  assert.equal(state.stuckLoop, null);
 });
 
-test("createStreamRenderer: repetição no contexto principal não é laço da Orientação (issue #74)", () => {
-  // O agente principal que repete um comando é outro sintoma — a iteração das
-  // 19:18 de 28/08/2026 morreu assim, e o teto de tempo é quem responde por ela.
-  const state = repeat(ORIENTATION_LOOP_LIMIT * 2, (i) => ({
-    type: "assistant",
-    message: { role: "assistant", content: [{ type: "tool_use", id: `c${i}`, name: "Bash", input: VIEW_16 }] },
-  }));
-  assert.equal(state.orientationLoop, null);
+test("createStreamRenderer: a repetição do processo principal responde pelo teto do principal (issue #76)", () => {
+  // A #74 media só a Orientação, e o principal repetindo passava batido — a
+  // iteração das 19:18 de 28/08/2026 morreu assim, esperando o teto de tempo.
+  const state = repeat(MAIN_LOOP_LIMIT, (i) => mainTool(`c${i}`, "Bash", VIEW_16));
+  assert.equal(state.stuckLoop?.phase, "main");
 });
 
 test("createStreamRenderer: a repetição das iterações que entregaram fica abaixo do teto (issue #74)", () => {
   // Máximo medido em 28/08/2026 nas iterações com `result: success`: 2x.
   const state = repeat(2, (i) => orientationTool(`c${i}`, "Bash", VIEW_16));
-  assert.equal(state.orientationLoop, null);
+  assert.equal(state.stuckLoop, null);
 });
 
 test("createStreamRenderer: o ciclo que alterna três tickets também é laço (issue #74)", () => {
@@ -512,11 +518,11 @@ test("createStreamRenderer: o ciclo que alterna três tickets também é laço (
   const state = repeat(ORIENTATION_LOOP_LIMIT * 3, (i) =>
     orientationTool(`c${i}`, "Bash", { command: `gh issue view ${18 + (i % 3)} --json state` })
   );
-  assert.equal(state.orientationLoop?.count, ORIENTATION_LOOP_LIMIT);
+  assert.equal(state.stuckLoop?.count, ORIENTATION_LOOP_LIMIT);
 });
 
-test("formatOrientationLoop: nomeia o comando repetido e quantas vezes", () => {
-  const line = formatOrientationLoop({ tool: "Bash", detail: "gh issue view 16 --json state", count: 240 });
+test("formatStuckLoop: nomeia o comando repetido e quantas vezes", () => {
+  const line = formatStuckLoop({ phase: "orientation", tool: "Bash", detail: "gh issue view 16 --json state", count: 240 });
   assert.match(line, /240/);
   assert.match(line, /gh issue view 16/);
   assert.match(line, /Orientação/);
@@ -532,10 +538,10 @@ test("createStreamRenderer: a Orientação que anda o offset no mesmo arquivo vi
   const state = repeat(ORIENTATION_TARGET_LOOP_LIMIT + PAGES, (i) =>
     orientationTool(`c${i}`, "Read", { file_path: PROGRESS, offset: 250 + (i % PAGES) * 2 })
   );
-  assert.equal(state.orientationLoop?.kind, "same-target");
-  assert.equal(state.orientationLoop?.count, ORIENTATION_TARGET_LOOP_LIMIT);
-  assert.equal(state.orientationLoop?.tool, "Read");
-  assert.match(state.orientationLoop?.detail, /PROGRESS\.md/);
+  assert.equal(state.stuckLoop?.kind, "same-target");
+  assert.equal(state.stuckLoop?.count, ORIENTATION_TARGET_LOOP_LIMIT);
+  assert.equal(state.stuckLoop?.tool, "Read");
+  assert.match(state.stuckLoop?.detail, /PROGRESS\.md/);
 });
 
 test("createStreamRenderer: a leitura paginada legítima não é laço (issue #75)", () => {
@@ -550,7 +556,7 @@ test("createStreamRenderer: a leitura paginada legítima não é laço (issue #7
   for (let i = 0; i < 9; i++) {
     feed(renderer, orientationTool(`r${i}`, "Read", { file_path: LOCATE, offset: 1400 - i * 10, limit: 30 }));
   }
-  assert.equal(renderer.end().orientationLoop, null);
+  assert.equal(renderer.end().stuckLoop, null);
 });
 
 test("createStreamRenderer: a repetição idêntica continua sendo o laço da #74, não o do alvo", () => {
@@ -558,8 +564,8 @@ test("createStreamRenderer: a repetição idêntica continua sendo o laço da #7
   // sairia pelos dois. Quem responde é o teto fino: ele estoura antes e diz
   // com precisão o que o modelo repetiu.
   const state = repeat(ORIENTATION_TARGET_LOOP_LIMIT + 10, (i) => orientationTool(`c${i}`, "Bash", VIEW_16));
-  assert.equal(state.orientationLoop?.kind, "same-input");
-  assert.equal(state.orientationLoop?.count, ORIENTATION_TARGET_LOOP_LIMIT + 10);
+  assert.equal(state.stuckLoop?.kind, "same-input");
+  assert.equal(state.stuckLoop?.count, ORIENTATION_TARGET_LOOP_LIMIT + 10);
 });
 
 test("createStreamRenderer: o laço por alvo cede ao laço por chamada dentro do mesmo chunk", () => {
@@ -572,27 +578,90 @@ test("createStreamRenderer: o laço por alvo cede ao laço por chamada dentro do
       feed(renderer, orientationTool(`p${volta}-${i}`, "Read", { file_path: PROGRESS, offset: i }));
     }
   }
-  assert.equal(renderer.state.orientationLoop?.kind, "same-target");
+  assert.equal(renderer.state.stuckLoop?.kind, "same-target");
   for (let i = 0; i < ORIENTATION_LOOP_LIMIT; i++) feed(renderer, orientationTool(`b${i}`, "Bash", VIEW_16));
-  const loop = renderer.end().orientationLoop;
+  const loop = renderer.end().stuckLoop;
   assert.equal(loop?.kind, "same-input");
   assert.equal(loop?.count, ORIENTATION_LOOP_LIMIT);
 });
 
-test("formatOrientationLoop: o laço que anda o argumento nomeia a ferramenta e o alvo", () => {
-  const line = formatOrientationLoop({ kind: "same-target", tool: "Read", detail: PROGRESS, count: 25 });
+test("formatStuckLoop: o laço que anda o argumento nomeia a ferramenta e o alvo", () => {
+  const line = formatStuckLoop({ phase: "orientation", kind: "same-target", tool: "Read", detail: PROGRESS, count: 25 });
   assert.match(line, /25/);
   assert.match(line, /Read/);
   assert.match(line, /PROGRESS\.md/);
 });
 
-test("formatOrientationLoop: a repetição idêntica mantém a linha da #74, palavra por palavra", () => {
+test("formatStuckLoop: a repetição idêntica mantém a linha da #74, palavra por palavra", () => {
   assert.equal(
-    formatOrientationLoop({ tool: "Bash", detail: "gh issue view 16 --json state", count: 240 }),
+    formatStuckLoop({ phase: "orientation", tool: "Bash", detail: "gh issue view 16 --json state", count: 240 }),
     "a Orientação repetiu 240x o mesmo Bash (gh issue view 16 --json state) — laço fechado"
   );
 });
 
-test("formatOrientationLoop: sem laço, nenhuma linha", () => {
-  assert.equal(formatOrientationLoop(null), "");
+test("formatStuckLoop: sem laço, nenhuma linha", () => {
+  assert.equal(formatStuckLoop(null), "");
+});
+
+const LOG_5 = { command: "git log --oneline -5", timeout: 5000 };
+const VIEW_21 = { command: "gh issue view 21 --json number,title,body 2>&1 | head -40" };
+
+test("createStreamRenderer: o laço do processo principal nomeia o comando repetido (issue #76)", () => {
+  // A forma da iteração das 12:18 de 01/09/2026: dois comandos byte a byte
+  // idênticos, alternados, dominam os 102 `tool_use` do principal. O laço
+  // aparece onde o `abortWhen` cortaria — no vigésimo `git log`, não no
+  // quadragésimo terceiro que o log inteiro traz, porque ali a iteração já
+  // está morta.
+  const renderer = createStreamRenderer();
+  let usos = 0;
+  while (!renderer.state.stuckLoop && usos < 102) {
+    feed(renderer, mainTool(`a${usos}`, "Bash", LOG_5));
+    feed(renderer, mainTool(`b${usos}`, "Bash", VIEW_21));
+    usos += 2;
+  }
+  const loop = renderer.end().stuckLoop;
+  assert.equal(loop?.phase, "main");
+  assert.equal(loop?.count, MAIN_LOOP_LIMIT);
+  assert.match(loop?.detail, /git log --oneline -5/);
+  assert.equal(usos, MAIN_LOOP_LIMIT * 2);
+});
+
+test("createStreamRenderer: o teto do principal é mais alto que o da Orientação (issue #76)", () => {
+  // A iteração que trabalha roda a mesma suíte e o mesmo `git status` de novo
+  // de forma legítima; a Orientação lê e relata, e não deveria repetir nada.
+  assert.ok(MAIN_LOOP_LIMIT > ORIENTATION_LOOP_LIMIT);
+  const state = repeat(ORIENTATION_LOOP_LIMIT, (i) => mainTool(`c${i}`, "Bash", LOG_5));
+  assert.equal(state.stuckLoop, null);
+});
+
+test("createStreamRenderer: a repetição das iterações que entregaram fica abaixo do teto do principal (issue #76)", () => {
+  // Máximo do principal nas 71 iterações que fecharam com `result: success`:
+  // 6x um `Bash true` numa iteração de 90 turnos que entregou (24/08/2026 20:26).
+  const state = repeat(6, (i) => mainTool(`c${i}`, "Bash", { command: "true" }));
+  assert.equal(state.stuckLoop, null);
+});
+
+test("createStreamRenderer: o principal que relê o mesmo arquivo em páginas novas não é laço (issue #76)", () => {
+  // O teto grosso da #75 não vale aqui: a iteração que implementa relê e
+  // reescreve o mesmo arquivo o tempo todo, e o alvo repetido é rotina dela.
+  const state = repeat(MAIN_LOOP_LIMIT * 3, (i) =>
+    mainTool(`c${i}`, "Read", { file_path: PROGRESS, offset: i * 2 })
+  );
+  assert.equal(state.stuckLoop, null);
+});
+
+test("createStreamRenderer: a fase que travou primeiro responde pela iteração (issue #76)", () => {
+  // O laço do principal não apaga o da Orientação: a delegação estourou antes,
+  // e é ela que o operador precisa consertar.
+  const renderer = createStreamRenderer();
+  for (let i = 0; i < ORIENTATION_LOOP_LIMIT; i++) feed(renderer, orientationTool(`o${i}`, "Bash", VIEW_16));
+  for (let i = 0; i < MAIN_LOOP_LIMIT * 2; i++) feed(renderer, mainTool(`m${i}`, "Bash", LOG_5));
+  assert.equal(renderer.end().stuckLoop?.phase, "orientation");
+});
+
+test("formatStuckLoop: o laço do principal nomeia o processo principal, não a Orientação (issue #76)", () => {
+  assert.equal(
+    formatStuckLoop({ phase: "main", tool: "Bash", detail: "git log --oneline -5", count: 20 }),
+    "o processo principal repetiu 20x o mesmo Bash (git log --oneline -5) — laço fechado"
+  );
 });

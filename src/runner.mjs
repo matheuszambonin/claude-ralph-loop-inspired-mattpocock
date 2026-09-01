@@ -10,7 +10,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatOrientationLoop } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatStuckLoop } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -297,17 +297,23 @@ export function describeIterationTimeout({ iteration, seconds, logPath }) {
 }
 
 /**
- * Puro: o que o operador lê quando a Orientação travou em laço (issue #74).
- * Aponta `orientationModel` porque é o campo que muda o desfecho — nas quatro
- * iterações da issue a Orientação tinha herdado o modelo de 9B do Provedor
- * local, e nenhuma das 15 anteriores em Sonnet repetiu uma chamada sequer.
+ * Puro: o que o operador lê quando a iteração travou em laço (issue #74).
+ * Aponta o campo que muda o desfecho, e ele depende de quem travou: nas quatro
+ * iterações da #74 a Orientação tinha herdado o modelo de 9B do Provedor
+ * local, e nenhuma das 15 anteriores em Sonnet repetiu uma chamada sequer; no
+ * laço do processo principal de 01/09/2026 (issue #76) quem estava pequeno
+ * demais era o modelo da iteração inteira, e `orientationModel` não o alcança.
  */
-export function describeOrientationLoop({ iteration, loop, logPath }) {
+export function describeStuckLoop({ iteration, loop, logPath }) {
+  const fix = loop.phase === "main"
+    ? `  Se o Provedor é pequeno demais para o trabalho da iteração, aponte ` +
+      `model (ou nightProvider.model) para um modelo maior.`
+    : `  Se o Provedor da Orientação é pequeno demais para o passo 1, aponte ` +
+      `orientationModel (ou nightProvider.orientationModel) para um modelo maior.`;
   return (
-    `iteração ${iteration} travou em laço: ${formatOrientationLoop(loop)}.\n` +
+    `iteração ${iteration} travou em laço: ${formatStuckLoop(loop)}.\n` +
     `  Log até o corte: ${logPath}\n` +
-    `  Se o Provedor da Orientação é pequeno demais para o passo 1, aponte ` +
-    `orientationModel (ou nightProvider.orientationModel) para um modelo maior.`
+    fix
   );
 }
 
@@ -315,10 +321,10 @@ export function describeOrientationLoop({ iteration, loop, logPath }) {
  * Anuncia o corte. Vermelho como o teto de tempo: a iteração morreu sem
  * entregar. O loop, esse, segue — ver `runLoop`.
  */
-export function reportOrientationLoop(root, cfg, result, iteration) {
+export function reportStuckLoop(root, cfg, result, iteration) {
   const logPath = path.relative(root, result.logPath);
   process.stdout.write(
-    paint(C.red, `\n✗ ${describeOrientationLoop({ iteration, loop: result.state.orientationLoop, logPath })}\n`)
+    paint(C.red, `\n✗ ${describeStuckLoop({ iteration, loop: result.state.stuckLoop, logPath })}\n`)
   );
 }
 
@@ -397,8 +403,9 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     // O teto de tempo sozinho não alcança o laço (issue #74): em 28/08/2026 as
     // quatro iterações travadas foram mortas à mão entre 1,5 e 9,5 minutos, e
     // sem o Ctrl+C teriam ficado a hora inteira do teto. Aqui o corte sai em
-    // segundos, assim que a Orientação repete a mesma chamada dez vezes.
-    abortWhen: () => renderer.state.orientationLoop !== null,
+    // segundos, assim que a Orientação repete a mesma chamada dez vezes — ou o
+    // processo principal repete a mesma vinte (issue #76).
+    abortWhen: () => renderer.state.stuckLoop !== null,
     extraArgs: [...extraArgs, ...mcpArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
@@ -536,7 +543,7 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
     // quatro entregas entre quatro laços, e a próxima iteração escolhe outro
     // ticket. O que o corte já comprou é o laço custar segundos, não uma hora.
     if (result.looped) {
-      reportOrientationLoop(root, cfg, result, i);
+      reportStuckLoop(root, cfg, result, i);
     } else if (result.code !== 0) {
       // Estouro do teto para o loop pelo mesmo caminho de qualquer iteração
       // falha (issue #67): a máquina acabou de dar sinal de travamento, e

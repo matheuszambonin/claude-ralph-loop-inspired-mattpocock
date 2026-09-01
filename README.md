@@ -216,7 +216,9 @@ onde chegou e o `afk` para — a mesma saída de qualquer iteração que falha, 
 pelo mesmo motivo: a máquina acabou de dar sinal de travamento. Uma hora é
 generoso de propósito, porque máquina lenta com modelo grande é espera longa
 legítima; o que não é legítimo é `ralph afk --night` queimando a noite inteira
-num subagente em laço fechado.
+em laço fechado — e para esse o Ralph não espera o relógio: a iteração que
+repete a mesma chamada morre em segundos, seja a Orientação repetindo, seja o
+processo principal, e o loop segue para a próxima.
 
 `feedbackLoops` é a parte que mais decide a qualidade do resultado. São os
 comandos que o agente é proibido de contornar antes de commitar — sem eles,

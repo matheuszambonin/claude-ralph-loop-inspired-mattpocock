@@ -81,6 +81,27 @@ export const ORIENTATION_LOOP_LIMIT = 10;
  */
 export const ORIENTATION_TARGET_LOOP_LIMIT = 25;
 
+/**
+ * Quantas vezes o processo principal pode repetir o mesmo `tool_use` antes de
+ * o Ralph chamar aquilo de laço (issue #76). Teto próprio, e mais alto que os
+ * 10 da Orientação, porque as duas fases fazem coisas diferentes: a iteração
+ * que trabalha roda a mesma suíte e o mesmo `git status` de novo de forma
+ * legítima, enquanto a Orientação lê e relata e não deveria repetir nada.
+ *
+ * Vinte fica no meio da folga medida nos 96 logs dos três repositórios alvo:
+ * entre as 71 iterações que fecharam com `result: success`, a que mais repetiu
+ * repetiu 6 vezes (um `Bash true`, 24/08/2026 20:26, 90 turnos e entrega), e o
+ * menor laço do principal é 40 (a iteração das 20:30 de 28/08/2026, repetindo
+ * um `find`). Os outros três laços repetiram 85, 85 e 43.
+ *
+ * A chave grossa da #75 — chamada refeita no mesmo alvo — não vale aqui: a
+ * iteração que implementa relê e reescreve o mesmo arquivo o tempo todo, e o
+ * alvo repetido é rotina dela, não sintoma. O preço é o laço que anda o
+ * argumento passar batido no principal, como passava antes da #75 na
+ * Orientação.
+ */
+export const MAIN_LOOP_LIMIT = 20;
+
 export function createStreamRenderer({ onEvent } = {}) {
   const state = {
     text: "",
@@ -97,7 +118,7 @@ export function createStreamRenderer({ onEvent } = {}) {
     orientationSummaries: 0,
     orientationDelegatedTo: null,
     failedSkills: [],
-    orientationLoop: null,
+    stuckLoop: null,
   };
 
   // Ids dos `tool_use` do Agent tool. Sem isto, qualquer `tool_result` que
@@ -131,13 +152,26 @@ export function createStreamRenderer({ onEvent } = {}) {
   // paginada legítima passar.
   const orientationTargets = new Map();
 
-  function countOrientationTool(block, detail) {
-    const key = `${block.name}
+  // A mesma conta para o processo principal (issue #76), em mapa separado: o
+  // laço de 01/09/2026 repetiu `git log --oneline -5` 43 vezes fora da
+  // Orientação, e a #74 só media a delegação. Somar as duas fases num mapa só
+  // misturaria o comando que a Orientação leu com o que o principal rodou.
+  const mainTools = new Map();
+
+  // A chave da chamada repetida: ferramenta mais input inteiro. Uma função
+  // para as duas fases, porque contar diferente em cada uma faria os dois
+  // tetos medirem coisas diferentes com o mesmo nome.
+  function sameInputKey(block) {
+    return `${block.name}
 ${JSON.stringify(block.input ?? {})}`;
+  }
+
+  function countOrientationTool(block, detail) {
+    const key = sameInputKey(block);
     const count = (orientationTools.get(key) ?? 0) + 1;
     orientationTools.set(key, count);
     if (count >= ORIENTATION_LOOP_LIMIT) {
-      recordLoop("same-input", block.name, detail, count);
+      recordLoop({ phase: "orientation", kind: "same-input", tool: block.name, detail, count });
       return;
     }
     // Sem `detail` o alvo seria a ferramenta pelada, e aí todo `Read` da
@@ -147,7 +181,16 @@ ${JSON.stringify(block.input ?? {})}`;
 ${detail}`;
     const redone = (orientationTargets.get(targetKey) ?? 0) + 1;
     orientationTargets.set(targetKey, redone);
-    if (redone >= ORIENTATION_TARGET_LOOP_LIMIT) recordLoop("same-target", block.name, detail, redone);
+    if (redone >= ORIENTATION_TARGET_LOOP_LIMIT) {
+      recordLoop({ phase: "orientation", kind: "same-target", tool: block.name, detail, count: redone });
+    }
+  }
+
+  function countMainTool(block, detail) {
+    const key = sameInputKey(block);
+    const count = (mainTools.get(key) ?? 0) + 1;
+    mainTools.set(key, count);
+    if (count >= MAIN_LOOP_LIMIT) recordLoop({ phase: "main", kind: "same-input", tool: block.name, detail, count });
   }
 
   /**
@@ -162,11 +205,15 @@ ${detail}`;
    * cortasse na primeira detecção, mas ele roda depois de cada chunk, e um
    * chunk traz vários `tool_use`.
    */
-  function recordLoop(kind, tool, detail, count) {
-    const current = state.orientationLoop;
-    if (current?.kind === "same-input" && kind !== "same-input") return;
-    if (current?.kind === kind && count <= current.count) return;
-    state.orientationLoop = { kind, tool, detail, count };
+  function recordLoop(loop) {
+    const current = state.stuckLoop;
+    // A fase que travou primeiro responde pela iteração (issue #76): o laço do
+    // principal atrás de um da Orientação é consequência, e trocar a linha
+    // mandaria o operador consertar o modelo errado.
+    if (current && current.phase !== loop.phase) return;
+    if (current?.kind === "same-input" && loop.kind !== "same-input") return;
+    if (current?.kind === loop.kind && loop.count <= current.count) return;
+    state.stuckLoop = loop;
   }
 
   function handle(evt) {
@@ -225,6 +272,12 @@ ${detail}`;
             }
             const detail = describeTool(block.name, block.input);
             if (evt.subagent_type === "orientation") countOrientationTool(block, detail);
+            // Sem `subagent_type` é o processo principal (issue #76). Os
+            // outros subagentes ficam de fora — o `general-purpose` que o
+            // agente delega por conta própria aparece em log real com 15
+            // eventos numa iteração só, e o que ele repete lá dentro é o
+            // trabalho dele, não a iteração parada.
+            else if (!evt.subagent_type) countMainTool(block, detail);
             process.stdout.write(
               `${paint(C.cyan, "⚙")} ${paint(C.bold, block.name)}${detail ? paint(C.dim, "  " + detail) : ""}\n`
             );
@@ -439,16 +492,22 @@ export function formatCostByModel(totalCost, modelTotals, { billed = true, fallb
 export { C as colors, paint };
 
 /**
- * Puro: a linha que o operador lê quando a Orientação travou em laço. Diz o
+ * Puro: a linha que o operador lê quando a iteração travou em laço. Diz o
  * comando, porque é ele que identifica onde o modelo parou de decidir — nas
  * quatro iterações da #74 era sempre um `gh issue view` reconsultando o estado
- * de um ticket que a Orientação já tinha lido.
+ * de um ticket que a Orientação já tinha lido, e no laço do principal de
+ * 01/09/2026 era um `git log --oneline -5` que não tinha mudado de resposta.
+ *
+ * Quem travou aparece na linha (issue #76) porque é o que diz qual campo do
+ * config muda o desfecho: a Orientação sai por `orientationModel`, a iteração
+ * inteira sai por `model`.
  */
-export function formatOrientationLoop(loop) {
+export function formatStuckLoop(loop) {
   if (!loop) return "";
   const detail = loop.detail ? ` (${loop.detail})` : "";
+  const who = loop.phase === "main" ? "o processo principal" : "a Orientação";
   if (loop.kind === "same-target") {
-    return `a Orientação refez ${loop.count} chamadas de ${loop.tool}${detail} que já tinha feito — laço fechado`;
+    return `${who} refez ${loop.count} chamadas de ${loop.tool}${detail} que já tinha feito — laço fechado`;
   }
-  return `a Orientação repetiu ${loop.count}x o mesmo ${loop.tool}${detail} — laço fechado`;
+  return `${who} repetiu ${loop.count}x o mesmo ${loop.tool}${detail} — laço fechado`;
 }

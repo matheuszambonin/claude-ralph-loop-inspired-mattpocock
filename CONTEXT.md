@@ -97,8 +97,10 @@ _Avoid_: modo offline, modo local, modo barato
 Quanto tempo uma iteração pode durar antes de o Ralph matar o `claude` e parar
 o loop. É paciência declarada pelo operador, não medida de velocidade: máquina
 lenta com modelo grande espera muito e está certa. O que o teto recusa é a
-espera infinita — o subagente em laço fechado que o **AFK** existe para
-dispensar e que, sem teto, queima a noite na iteração 1.
+espera infinita — o laço fechado que o **AFK** existe para dispensar e que,
+sem teto, queima a noite na iteração 1. Ele não é o corte por laço: aquele lê
+repetição no stream e mata em segundos, na Orientação ou no processo
+principal, e deixa o loop seguir.
 _Avoid_: timeout, deadline, limite de tempo
 
 **Orçamento de saída**:
@@ -109,3 +111,13 @@ de responder virou norma: o raciocínio gasta orçamento de saída e não deixa
 texto, e uma sonda que confunde os dois acusa de truncar o prompt quem leu o
 prompt inteiro.
 _Avoid_: max_tokens, limite de tokens, teto de resposta
+
+**Corte por laço**:
+Matar a iteração que repete a mesma chamada de ferramenta sem sair do lugar,
+lendo o stream em vez do relógio. Distingue-se do **Teto da iteração** por
+onde acerta e a que preço: o teto cobra uma hora de espera e para o loop; o
+corte sai em segundos e deixa o loop escolher outro ticket. Conta por fase,
+com teto próprio em cada uma, porque a **Orientação** que lê e relata não
+deveria repetir nada, enquanto o processo principal roda a mesma suíte de novo
+de forma legítima.
+_Avoid_: detecção de loop, anti-loop, watchdog
