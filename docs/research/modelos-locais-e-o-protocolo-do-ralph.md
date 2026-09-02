@@ -521,3 +521,65 @@ depende de nada disso.
 
 Cai o "não" da coluna "configuração conserta" para o sintoma 1. Um prompt que dá
 saída para a pergunta é configuração, e ele consertou.
+
+## Adendo, 02/09/2026, tarde: a regra em prosa contra a regra que o Ralph cobra
+
+O adendo acima fecha dizendo que um prompt que dá saída para a pergunta é
+configuração, e que ele consertou o sintoma 1. As três rodadas desta tarde
+delimitam até onde isso vale, porque separam dois tipos de regra que os
+parágrafos anteriores tratavam como um só.
+
+A **regra estrutural** é a da issue #81: "o frontier é fechado, e um ticket sem
+o rótulo está fora dele". Ela muda o espaço de respostas — antes a pergunta
+"qual ticket?" não tinha saída com o frontier vazio, e o modelo inventava uma.
+
+A **regra de conferência** é a da #78: "o estado de um ticket vem de uma
+consulta àquele ticket; comentário de outra issue é pista, nunca estado". Ela
+não muda o espaço de respostas, pede disciplina no caminho até a resposta.
+
+A distinção não era visível antes porque as duas entraram como parágrafo do
+mesmo prompt, com a mesma cara.
+
+### O que cada uma segurou
+
+Terraços, frontier `ready-for-agent` vazio, `ornith:9b` nos dois papéis, o
+comentário de 28/08 da #12 dizendo "#19 segue aberto e atribuído" e a #19
+fechada desde as 12:57Z do mesmo dia.
+
+| Log | Frontier vazio relatado como vazio | `#19` ressuscitada |
+|---|---|---|
+| `2026-09-02T14-16-29-923Z-iter-01.jsonl` | sim, `STATUS: complete` | sim, no `CONTEXT` |
+| `2026-09-02T14-39-06-737Z-iter-01.jsonl` | sim, `STATUS: complete` | não |
+
+A regra estrutural segurou nas duas. A de conferência não segurou na primeira: o
+`CONTEXT` diz "#19 ... ainda está aberta e atribuída", e as quatro ferramentas
+daquela Orientação (linhas 86, 89, 92 e 95) não incluem consulta nenhuma à #19.
+O texto do parágrafo estava no prompt desde `489bcac`, reforçado em `d699b75`,
+e o modelo passou por cima dele duas vezes — a segunda foi a rodada das 18:23Z
+de 01/09, com `qwen3-coder:30b`.
+
+Entre as duas rodadas mudou o desenho, não a redação. O `CONTEXT` saiu do
+contrato quando o `STATUS` não é `ready`, o `checkOrientationSummary` passou a
+cobrar isso, e o `implement.md` parou de exigir o contrário (ele mandava tratar
+`CONTEXT` vazio como resumo malformado, sem olhar o `STATUS`, e era essa linha
+que a iteração repetia ao delegar). Um campo que o contrato não pede é um campo
+que o modelo não preenche com prosa velha.
+
+### O que isso custa dizer
+
+O placar não é "prosa nunca funciona". A regra de conferência continua no
+prompt, e é ela que fez a Orientação da segunda rodada consultar a #12 direto
+(`gh issue view 12 --json ...`) em vez de só listar. O que a medição mostra é
+mais estreito: **regra que só o modelo pode cumprir falha silenciosamente, e
+falha exatamente no campo que ninguém verifica.** Onde couber tirar o campo em
+vez de pedir cuidado com ele, tire.
+
+### O falso positivo, que é do Ralph
+
+A primeira rodada com a trava ligada avisou sobre um resumo correto. O
+`tool_result` do Agent tool anexa um rodapé (`agentId:`, `<usage>`) que nenhum
+rótulo do contrato casa, e o último campo do resumo o engolia inteiro. O
+`CONTEXT:` estava vazio e chegou ao validador com o rodapé dentro. O bug é
+anterior à issue e estava latente: o `CLAIM`, único campo que o Ralph lia até a
+#82, nunca é o último. Ler mais campo do resumo cobra ler o corpo com mais
+cuidado.

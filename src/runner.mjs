@@ -10,7 +10,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatStuckLoop, formatInvalidSummary, formatStrayTicket, orientationHalts } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatStuckLoop, formatInvalidSummary, formatStraySummary, orientationHalts } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -295,13 +295,15 @@ function warnIfSkillCallFailed(state, cfg) {
 
 /**
  * Amarelo, como os outros desta seção: o corte já aconteceu pelo `STATUS`, e
- * quem lê o log de manhã merece saber que o relatório se contradizia (issue
+ * quem lê o log de manhã merece saber que o resumo se contradizia (issue
  * #82).
  */
-function warnIfStrayTicket(state) {
-  const warning = formatStrayTicket(state.strayTicket);
+function warnIfStraySummary(state) {
+  const warning = formatStraySummary(state.straySummary);
   if (!warning) return;
-  process.stdout.write(paint(C.yellow, `\n  ${warning}\n`));
+  // Um aviso por desvio, e a indentação é daqui: o formatador devolve as
+  // linhas cruas, como os irmãos desta seção.
+  process.stdout.write(paint(C.yellow, `\n  ${warning.split("\n").join("\n  ")}\n`));
 }
 
 /**
@@ -553,7 +555,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   warnIfOrientationCeilingExceeded(state);
   warnIfOrientationMissed(state, cfg, prompt, timedOut || aborted);
   warnIfSkillCallFailed(state, cfg);
-  warnIfStrayTicket(state);
+  warnIfStraySummary(state);
   await warnIfAuthFailed(state, cfg);
 
   // No estouro do teto, `code` é o do processo que nós matamos e o stderr é

@@ -13,7 +13,7 @@ import {
   orientationHalts,
   checkOrientationSummary,
   formatInvalidSummary,
-  formatStrayTicket,
+  formatStraySummary,
   ORIENTATION_LOOP_LIMIT,
   MAIN_LOOP_LIMIT,
   ORIENTATION_TARGET_LOOP_LIMIT,
@@ -756,6 +756,18 @@ const BLOCKED_SUMMARY = [
   "  falta em `locate_ends`; a fórmula é `abs(z - z0) <= tol`.",
 ].join("\n");
 
+// O resumo que a rodada de prova da #78 devolveu (02/09/2026, Terraços,
+// `ornith:9b`). A fronteira vazia saiu certa; o `CONTEXT` dá a #19 como aberta,
+// e ela fechara 1h19 antes.
+const COMPLETE_WITH_CONTEXT = [
+  "STATUS: complete",
+  "TICKET:",
+  "WHY: A fronteira está vazia. Os dois tickets abertos (#12 e #21) são `ready-for-human`.",
+  "CONTEXT:",
+  "- `gh issue list --state open` devolve apenas #12 e #21, ambos `ready-for-human`.",
+  "- #19 (a última fatia de núcleo/casca do ramo gradiente) ainda está aberta e atribuída.",
+].join("\n");
+
 test("parseOrientationStatus: lê o STATUS do resumo bloqueado da issue #79", () => {
   assert.equal(parseOrientationStatus(BLOCKED_SUMMARY), "blocked");
   assert.equal(parseOrientationStatus(SUMMARY), "ready");
@@ -879,7 +891,9 @@ test("checkOrientationSummary: o CLAIM que o modelo quebrou em duas linhas não 
 test("checkOrientationSummary: a palavra de escrita dentro de flag não é subcomando", () => {
   // `--create` cria uma branch para o trabalho, não um ticket, e é claim
   // plausível num repo sem tracker remoto.
-  const summary = ["STATUS: ready", "TICKET: #19 x", "CLAIM: git switch --create ralph/19", "WHY: y"].join("\n");
+  // O `CONTEXT` entra porque `ready` sem ele corta por outro motivo (issue
+  // #78), e o que este teste isola é o `CLAIM`.
+  const summary = ["STATUS: ready", "TICKET: #19 x", "CLAIM: git switch --create ralph/19", "WHY: y", "CONTEXT: - src/x.mjs"].join("\n");
   assert.equal(checkOrientationSummary(summary).cut, null);
 });
 
@@ -908,13 +922,65 @@ test("checkOrientationSummary: blocked com ticket nomeado é aviso, não corte (
   const summary = "STATUS: blocked\nTICKET: #19 — a que travou\nWHY: espera triagem";
   const { cut, stray } = checkOrientationSummary(summary);
   assert.equal(cut, null);
-  assert.match(formatStrayTicket(stray), /#19/);
+  assert.match(formatStraySummary(stray), /#19/);
 });
 
-test("checkOrientationSummary: o blocked medido em 01/09 não ganha aviso nenhum (issue #79)", () => {
+/**
+ * Este teste nasceu na #82 afirmando o contrário: o `BLOCKED_SUMMARY` não
+ * nomeia ticket no `TICKET`, então não havia desvio a apontar. A #78 mostrou
+ * que havia, um campo abaixo — o `CONTEXT` dele descreve o que falta
+ * implementar na #19, que estava fechada. É o mesmo resumo, e agora ele avisa.
+ */
+test("checkOrientationSummary: o blocked medido em 01/09 avisa pelo CONTEXT que ninguém vai ler (issue #78)", () => {
   const { cut, stray } = checkOrientationSummary(BLOCKED_SUMMARY);
+  assert.equal(cut, null, "o Corte por orientação já para tudo pelo STATUS; aqui é aviso");
+  assert.match(formatStraySummary(stray), /CONTEXT/);
+});
+
+/**
+ * Issue #78: a rodada de prova de 02/09/2026 no Terraços, `ornith:9b`, log
+ * `2026-09-02T14-16-29-923Z-iter-01.jsonl`. A fronteira vazia foi relatada
+ * como vazia — `complete`, `TICKET` vazio, corte antes de tocar no alvo — e o
+ * `CONTEXT` ressuscitou a #19, fechada 1h19 antes, copiando o comentário de
+ * 28/08 da #12 que o `gh issue list --json ...,comments` traz anexado.
+ *
+ * O `CONTEXT` de um resumo que para não tem destinatário: a iteração morre
+ * pelo `STATUS` antes de ler qualquer fato. Campo sem leitor é onde a prosa
+ * velha cabe sem contradizer nada.
+ */
+test("checkOrientationSummary: complete com CONTEXT preenchido avisa — a rodada de 02/09 (issue #78)", () => {
+  const { cut, stray } = checkOrientationSummary(COMPLETE_WITH_CONTEXT);
   assert.equal(cut, null);
-  assert.equal(formatStrayTicket(stray), "");
+  assert.equal(stray.status, "complete");
+  assert.equal(stray.ticket, "", "o TICKET veio vazio, como devia");
+  assert.match(stray.context, /#19/);
+  assert.match(formatStraySummary(stray), /CONTEXT/);
+});
+
+test("checkOrientationSummary: halt com CONTEXT vazio não avisa nada (issue #78)", () => {
+  const summary = "STATUS: complete\nTICKET:\nCLAIM:\nWHY: a fronteira está vazia\nCONTEXT:";
+  const { cut, stray } = checkOrientationSummary(summary);
+  assert.equal(cut, null);
+  assert.equal(formatStraySummary(stray), "");
+});
+
+/**
+ * A contraprova: com `ready` o `CONTEXT` tem destinatário, e é a razão de ele
+ * existir. A regra da #78 não pode encostar nesse caso.
+ */
+test("checkOrientationSummary: ready com CONTEXT preenchido é o caso normal (issue #78)", () => {
+  const { cut, stray } = checkOrientationSummary(SUMMARY);
+  assert.equal(cut, null);
+  assert.equal(stray, null);
+});
+
+test("formatStraySummary: halt que nomeia ticket e escreve CONTEXT diz os dois desvios (issue #78)", () => {
+  const summary = "STATUS: blocked\nTICKET: #19 — a que travou\nWHY: espera triagem\nCONTEXT: - ends.py";
+  const { stray } = checkOrientationSummary(summary);
+  const warning = formatStraySummary(stray);
+  assert.match(warning, /#19/);
+  assert.match(warning, /CONTEXT/);
+  assert.equal(warning.split("\n").length, 2, "um aviso por desvio");
 });
 
 test("createStreamRenderer: o resumo com CLAIM de escrita marca o corte (issue #82)", () => {
@@ -932,7 +998,7 @@ test("createStreamRenderer: o resumo bom não marca corte nenhum (issue #82)", (
   feed(renderer, toolResult("toolu_1", { content: [{ type: "text", text: SUMMARY }] }));
   const state = renderer.end();
   assert.equal(state.invalidSummary, null);
-  assert.equal(state.strayTicket, null);
+  assert.equal(state.straySummary, null);
 });
 
 test("createStreamRenderer: o que não é resumo de orientação não vira corte (issue #82)", () => {
@@ -951,4 +1017,87 @@ test("formatInvalidSummary: diz o defeito e o comando que o denuncia", () => {
   assert.match(line, /CLAIM/);
   assert.match(line, /--add-label/);
   assert.equal(formatInvalidSummary(null), "");
+});
+
+/**
+ * Issue #78: o `CONTEXT` entrava cru no aviso, e resumo real preenche campo
+ * vazio com palavra em vez de deixar em branco — `(none — frontier empty)` no
+ * `TICKET` da #79, `(empty)` no `CLAIM` do mesmo resumo. O aviso que dispara
+ * nesses três desgasta a única coisa que ele faz, que é chamar a atenção do
+ * operador quando algo saiu errado de verdade.
+ */
+test("checkOrientationSummary: CONTEXT que diz vazio com palavras não é CONTEXT preenchido (issue #78)", () => {
+  for (const said of ["(none)", "(none — frontier empty)", "(empty)", "n/a", "N/A", "nothing"]) {
+    const summary = `STATUS: complete\nTICKET:\nWHY: a fronteira está vazia\nCONTEXT: ${said}`;
+    assert.equal(checkOrientationSummary(summary).stray, null, `'${said}' não devia virar aviso`);
+  }
+});
+
+test("checkOrientationSummary: o eco do bloco de contrato no CONTEXT não é CONTEXT preenchido (issue #78)", () => {
+  const summary = "STATUS: complete\nTICKET:\nWHY: vazia\nCONTEXT: <bullet list of facts the iteration needs>";
+  assert.equal(checkOrientationSummary(summary).stray, null);
+});
+
+test("checkOrientationSummary: bullet que começa com traço é CONTEXT preenchido (issue #78)", () => {
+  const summary = "STATUS: blocked\nTICKET:\nWHY: espera triagem\nCONTEXT:\n- src/stream.mjs: o campo cru";
+  assert.match(formatStraySummary(checkOrientationSummary(summary).stray), /CONTEXT/);
+});
+
+/**
+ * O espelho do `ready` sem ticket, e o `implement.md` já o afirma: sob `ready`
+ * o `CONTEXT` vazio é resumo malformado. Faltava o Ralph cobrar — quem manda a
+ * iteração parar nesse caso era só a prosa do prompt, e é ela que os modelos
+ * locais ignoram (issue #78).
+ */
+test("checkOrientationSummary: ready sem CONTEXT corta — a iteração começaria às cegas (issue #78)", () => {
+  const summary = "STATUS: ready\nTICKET: #40 o ticket\nCLAIM: gh issue edit 40 --add-assignee @me\nWHY: primeiro da frente\nCONTEXT:";
+  assert.equal(checkOrientationSummary(summary).cut?.kind, "ready-without-context");
+});
+
+test("checkOrientationSummary: ready cujo CONTEXT só diz (none) corta igual (issue #78)", () => {
+  const summary = "STATUS: ready\nTICKET: #40 o ticket\nWHY: primeiro da frente\nCONTEXT: (none)";
+  assert.equal(checkOrientationSummary(summary).cut?.kind, "ready-without-context");
+});
+
+test("formatInvalidSummary: o corte por CONTEXT vazio diz o campo que faltou (issue #78)", () => {
+  const summary = "STATUS: ready\nTICKET: #40 o ticket\nWHY: primeiro da frente\nCONTEXT:";
+  const { cut } = checkOrientationSummary(summary);
+  assert.match(formatInvalidSummary(cut), /CONTEXT/);
+});
+
+/**
+ * Issue #78, e o falso positivo que só a rodada de prova mostrou: o
+ * `tool_result` do Agent tool traz, depois do resumo, o rodapé que o harness
+ * anexa — a linha `agentId:` e o bloco `<usage>`. Nada nele casa o rótulo do
+ * contrato, então o último campo do resumo o engolia inteiro. Em
+ * `2026-09-02T14-39-06-737Z-iter-01.jsonl` o `CONTEXT:` veio vazio, como o
+ * contrato agora pede, e o aviso disparou assim mesmo.
+ *
+ * O bug é anterior a esta issue e estava latente: o `CLAIM`, único campo que o
+ * Ralph lia até a #82, nunca é o último.
+ */
+const SUMMARY_WITH_FOOTER =
+  "STATUS: complete\nTICKET:\nCLAIM:\nWHY: A fronteira do agente está vazia.\nCONTEXT:" +
+  " agentId: ae4997a4cf47e7e8d (use SendMessage with to: 'ae4997a4cf47e7e8d')\n" +
+  "<usage>subagent_tokens: 50077\ntool_uses: 7\nduration_ms: 27707</usage>";
+
+test("checkOrientationSummary: o rodapé do Agent tool não vira CONTEXT preenchido (issue #78)", () => {
+  const { cut, stray } = checkOrientationSummary(SUMMARY_WITH_FOOTER);
+  assert.equal(cut, null);
+  assert.equal(stray, null, "o CONTEXT veio vazio; o aviso é falso positivo");
+});
+
+test("createStreamRenderer: o resumo de 02/09 com rodapé não marca aviso nenhum (issue #78)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { description: "orient", subagent_type: "orientation", run_in_background: false }));
+  feed(renderer, toolResult("toolu_1", {
+    content: [
+      { type: "text", text: "STATUS: complete\nTICKET:\nCLAIM:\nWHY: A fronteira do agente está vazia.\nCONTEXT:" },
+      { type: "text", text: "agentId: ae4997a4cf47e7e8d\n<usage>subagent_tokens: 50077\ntool_uses: 7\nduration_ms: 27707</usage>" },
+    ],
+  }));
+  const state = renderer.end();
+  assert.equal(state.orientationStatus, "complete");
+  assert.equal(state.straySummary, null);
+  assert.equal(state.subagentTokens, 50077, "cortar o rodapé da validação não pode tirá-lo da conta de custo");
 });

@@ -291,3 +291,21 @@ test("orientation.md: o CLAIM nunca é o comando que aplica rótulo de triagem",
   assert.ok(claim, "o bloco de contrato não descreve o campo CLAIM");
   assert.match(claim[0], /triage label/i);
 });
+
+/**
+ * Issue #78, a rodada de prova de 02/09/2026 no Terraços: a fronteira vazia
+ * saiu certa (`complete`, `TICKET` vazio) e o `CONTEXT` ressuscitou a #19,
+ * fechada uma hora e dezenove antes. O `CONTEXT` de um resumo que para não
+ * tem quem o leia — a iteração morre no `STATUS` antes de chegar nele —, e a
+ * regra em prosa duas seções acima não segurou o `ornith:9b` por dois turnos
+ * seguidos. Campo sem leitor sai do contrato, e `checkOrientationSummary`
+ * cobra o que o contrato pede.
+ */
+test("orientation.md: o CONTEXT é vazio quando o STATUS não é ready", () => {
+  const orientation = readOrientationTemplate();
+  const context = orientation.match(/^CONTEXT:[\s\S]*?(?=^```)/m);
+  assert.ok(context, "o bloco de contrato não descreve o campo CONTEXT");
+  assert.match(context[0], /empty when\s*\n?STATUS isn't ready/i);
+  // A explicação não some, ela muda de campo.
+  assert.match(context[0], /WHY/);
+});

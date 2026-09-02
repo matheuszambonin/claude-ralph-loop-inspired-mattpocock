@@ -273,3 +273,21 @@ test("implement.md: um CLAIM que aplica rótulo de triagem não é rodado", () =
   assert.match(step, /triage label/i);
   assert.match(step, /BLOCKED_PROMISE/);
 });
+
+/**
+ * Issue #78: o `implement.md` mandava tratar `CONTEXT` vazio como resumo
+ * malformado, sem distinguir o `STATUS`. A iteração repetia essa exigência ao
+ * delegar (log `2026-09-02T14-28-09-934Z-iter-01.jsonl`, linha 367), e a
+ * Orientação preenchia o campo mesmo quando parava o loop — foi ali que ela
+ * escreveu que a #19 do alvo seguia aberta, uma hora depois de fechar. O
+ * `orientation.md` agora pede o campo vazio nesses dois status; os dois
+ * prompts precisam pedir a mesma coisa.
+ */
+test("implement.md: CONTEXT vazio só é resumo malformado quando o STATUS é ready", () => {
+  const implement = readIterationTemplates()[DEFAULT_PROMPT];
+  const rule = implement.split(/\n\s*\n/).find((p) => /malformed/i.test(p));
+  assert.ok(rule, "nenhum parágrafo trata o resumo malformado");
+  assert.match(rule, /under `ready` an\s*\n?empty `CONTEXT` is malformed/i);
+  // E a polaridade do outro lado, sem a qual a regra passaria só por citar ready.
+  assert.match(rule, /under `complete` or `blocked` an\s*\n?empty `CONTEXT` is the shape/i);
+});

@@ -154,10 +154,19 @@ _Avoid_: frontier, fila, backlog, próximo ticket
 
 **Corte por resumo inválido**:
 Matar a iteração porque o **Resumo de orientação** veio errado — um `CLAIM` que
-é comando de escrita em vez de reivindicação, um `ready` sem ticket. É o
-avesso do **Corte por orientação**: ali o Ralph obedece ao relatório, aqui
-desconfia dele. Lê só o texto do resumo, e é por isso que alcança tão pouco:
-tudo que exigiria perguntar ao tracker fica fora, por escolha (ADR-0010).
-Como o **Corte por laço**, mata a iteração e deixa o loop seguir — o defeito é
-da resposta que aquele contexto produziu, e o próximo nasce limpo.
+é comando de escrita em vez de reivindicação, um `ready` sem ticket ou sem
+`CONTEXT`. É o avesso do **Corte por orientação**: ali o Ralph obedece ao
+resumo, aqui desconfia dele. Lê só o texto do resumo, e é por isso que alcança
+tão pouco: tudo que exigiria perguntar ao tracker fica fora, por escolha
+(ADR-0010). Como o **Corte por laço**, mata a iteração e deixa o loop seguir —
+o defeito é da resposta que aquele contexto produziu, e o próximo nasce limpo.
 _Avoid_: validação do contrato, corte por claim, sanity check
+
+**Campo à toa**:
+Campo do **Resumo de orientação** preenchido num resumo que para o loop — um
+ticket nomeado ou um `CONTEXT` escrito sob `complete` ou `blocked`. Vira aviso,
+nunca corte, porque o **Corte por orientação** já matou a iteração pelo
+`STATUS`: o estrago não é trabalho errado, é o operador lendo de manhã uma
+afirmação que ninguém conferiu. O `WHY` não conta como campo à toa, porque sob
+esses dois status é ele que o operador lê.
+_Avoid_: stray, campo órfão, resumo contraditório

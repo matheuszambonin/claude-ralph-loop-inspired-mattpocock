@@ -61,7 +61,8 @@ the ticket onto the frontier, it does not claim it.>
 WHY: <one paragraph: why this ticket, or why the frontier is empty or blocked>
 CONTEXT: <bullet list of facts the iteration needs and can't cheaply
 rediscover — file paths, prior decisions from PROGRESS.md or the ADRs,
-knowledge-index hints. Nothing it can get from a single grep.>
+knowledge-index hints. Nothing it can get from a single grep. Empty when
+STATUS isn't ready; the explanation goes in WHY.>
 ```
 
 If you can't fill this in with real information, say so in `WHY` instead of

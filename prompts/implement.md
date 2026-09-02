@@ -33,10 +33,11 @@ CONTEXT: ...
 Trust its `CONTEXT` instead of re-reading what it already read — every token
 you spend re-deriving what it found is a token you don't have for the ticket.
 
-If the report doesn't come back in that shape, or `CONTEXT` is empty, treat it
-as blocked: emit `<promise>{{BLOCKED_PROMISE}}</promise>` saying the
-orientation report was malformed, and stop. Do not run orientation again
-yourself.
+If the report doesn't come back in that shape, treat it as blocked: emit
+`<promise>{{BLOCKED_PROMISE}}</promise>` saying the orientation report was
+malformed, and stop. Do not run orientation again yourself. Under `ready` an
+empty `CONTEXT` is malformed the same way; under `complete` or `blocked` an
+empty `CONTEXT` is the shape the contract asks for.
 
 ## 2. Act on the report
 

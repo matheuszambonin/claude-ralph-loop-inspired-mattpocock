@@ -191,23 +191,74 @@ function hasTicketId(ticket) {
 }
 
 /**
+ * Os dois jeitos de o modelo não preencher um campo sem deixá-lo em branco:
+ * dizer o vazio com palavra, e ecoar o rótulo do bloco de contrato. Os dois
+ * saíram de resumo real — `(none — frontier empty)` e `(empty)` no mesmo
+ * resumo de 01/09/2026 (issues #79 e #82), e o eco `<id and title>` na
+ * rodada que o teste do eco cobre.
+ */
+const SAYS_EMPTY = /^[([]?\s*(none|empty|n\/a|nothing|null)\b/i;
+
+/**
+ * O campo do contrato que traz conteúdo de verdade. Sem isto o aviso da #78
+ * dispara nos três não-preenchimentos acima, e aviso que sai à toa é aviso que
+ * o operador aprende a pular.
+ *
+ * O eco se reconhece pelos sinais de menor e maior em volta do valor inteiro,
+ * não por um `<` solto: `CONTEXT: - a fórmula é `abs(z - z0) <= tol`` é bullet
+ * legítimo, e saiu de resumo real.
+ */
+function hasContent(field) {
+  const value = (field ?? "").trim();
+  if (!value) return false;
+  if (/^<[\s\S]*>$/.test(value)) return false;
+  return !SAYS_EMPTY.test(value);
+}
+
+/**
+ * O `tool_result` do Agent tool traz, depois do resumo, o rodapé que o harness
+ * anexa: a linha `agentId:` e o bloco `<usage>`. Nada nele casa o rótulo do
+ * contrato, então o último campo do resumo o engolia inteiro — em 02/09/2026 o
+ * `CONTEXT:` veio vazio, como o contrato pede, e o aviso da #78 disparou assim
+ * mesmo. O bug é anterior à issue e estava latente: o `CLAIM`, único campo que
+ * o Ralph lia até a #82, nunca é o último.
+ *
+ * Corta só para validar. A conta de custo lê o `<usage>` do corpo original, em
+ * `parseSubagentTokens`.
+ */
+function stripSubagentFooter(summary) {
+  return (summary ?? "").replace(/\s*(agentId:|<usage>)[\s\S]*$/, "");
+}
+
+/**
  * Puro: o **Resumo de orientação** entra, o **Corte por resumo inválido** sai
  * — `{ cut, stray }`, os dois `null` quando o resumo passa (issue #82).
  *
- * Corta duas coisas, e as duas se enxergam sem sair do texto: o `CLAIM` que é
- * comando de escrita em vez de reivindicação, e o `ready` que não nomeia
- * ticket, que mandaria a iteração trabalhar às cegas. O que exigiria perguntar
- * ao tracker do alvo — se aquele ticket está mesmo na Fronteira — fica fora,
- * por escolha registrada no ADR-0010.
+ * Corta três coisas, e as três se enxergam sem sair do texto: o `CLAIM` que é
+ * comando de escrita em vez de reivindicação, e o `ready` sem ticket ou sem
+ * `CONTEXT`, que mandaria a iteração trabalhar às cegas. O que exigiria
+ * perguntar ao tracker do alvo — se aquele ticket está mesmo na Fronteira —
+ * fica fora, por escolha registrada no ADR-0010.
  *
- * O inverso do segundo, `blocked` ou `complete` com ticket nomeado, sai em
- * `stray` e é aviso, não corte: o Corte por orientação já para tudo pelo
- * `STATUS`, e a Orientação pode ter nomeado por gentileza o ticket que travou.
+ * O inverso do segundo, `blocked` ou `complete` que preenche campo destinado à
+ * iteração, sai em `stray` e é aviso, não corte: o Corte por orientação já
+ * para tudo pelo `STATUS`, e a Orientação pode ter nomeado por gentileza o
+ * ticket que travou. São dois campos, o `TICKET` e o `CONTEXT`, e o segundo
+ * entrou pela issue #78 — o `CONTEXT` de um resumo que para não tem
+ * destinatário, e campo sem leitor foi onde a Orientação escreveu que a #19 do
+ * alvo seguia aberta uma hora depois de ela fechar. O que ninguém vai ler o
+ * modelo também não confere.
+ *
+ * O `WHY` fica de fora dos dois lados: sob `ready` ele não é o que a iteração
+ * usa para trabalhar, e sob `complete` ou `blocked` ele é o que o operador lê
+ * de manhã, então exigi-lo vazio apagaria a única explicação que sobra.
  */
 export function checkOrientationSummary(summary) {
   const status = parseOrientationStatus(summary);
-  const claim = summaryField(summary, "CLAIM");
-  const ticket = summaryField(summary, "TICKET");
+  const body = stripSubagentFooter(summary);
+  const claim = summaryField(body, "CLAIM");
+  const ticket = summaryField(body, "TICKET");
+  const context = summaryField(body, "CONTEXT");
 
   const write = CLAIM_WRITES.find((w) => w.pattern.test(claim));
   if (write) return { cut: { kind: "claim-writes", does: write.does, detail: claim }, stray: null };
@@ -215,8 +266,12 @@ export function checkOrientationSummary(summary) {
   if (status === "ready" && !hasTicketId(ticket)) {
     return { cut: { kind: "ready-without-ticket", detail: ticket }, stray: null };
   }
-  if (orientationHalts(status) && hasTicketId(ticket)) {
-    return { cut: null, stray: { status, ticket } };
+  if (status === "ready" && !hasContent(context)) {
+    return { cut: { kind: "ready-without-context", detail: context }, stray: null };
+  }
+  if (orientationHalts(status)) {
+    const stray = { status, ticket: hasTicketId(ticket) ? ticket : "", context: hasContent(context) ? context : "" };
+    if (stray.ticket || stray.context) return { cut: null, stray };
   }
   return { cut: null, stray: null };
 }
@@ -239,7 +294,7 @@ export function createStreamRenderer({ onEvent } = {}) {
     orientationDelegatedTo: null,
     orientationStatus: null,
     invalidSummary: null,
-    strayTicket: null,
+    straySummary: null,
     failedSkills: [],
     stuckLoop: null,
   };
@@ -455,7 +510,7 @@ ${detail}`;
             // lugar do Ralph que chega a vê-lo.
             const check = checkOrientationSummary(body);
             state.invalidSummary = check.cut;
-            state.strayTicket = check.stray;
+            state.straySummary = check.stray;
           }
           if (subagentCalls.has(block.tool_use_id)) {
             const tokens = parseSubagentTokens(body);
@@ -616,14 +671,25 @@ export function formatSkillFailureWarning(failedSkills) {
 
 /**
  * O outro lado do Corte por resumo inválido (issue #82): o resumo que para a
- * iteração pelo `STATUS` e nomeia um ticket assim mesmo. Aviso e não corte
- * porque o Corte por orientação já mata tudo antes de o repositório alvo ser
- * tocado; o que sobra é a incoerência de um relatório que aponta trabalho e
- * diz que não há.
+ * iteração pelo `STATUS` e preenche assim mesmo o que era para ela. Aviso e
+ * não corte porque o Corte por orientação já mata tudo antes de o repositório
+ * alvo ser tocado; o que sobra é a incoerência de um resumo que aponta
+ * trabalho e diz que não há.
+ *
+ * Uma linha por desvio, separadas por `\n` e sem indentação: o layout é do
+ * `runner`, como nos outros formatadores desta seção.
  */
-export function formatStrayTicket(stray) {
+export function formatStraySummary(stray) {
   if (!stray) return "";
-  return `⚠ a Orientação reportou ${stray.status} e nomeou um ticket assim mesmo (${stray.ticket}) — nada será trabalhado`;
+  const said = `⚠ a Orientação reportou ${stray.status} e`;
+  const lines = [];
+  if (stray.ticket) {
+    lines.push(`${said} nomeou um ticket assim mesmo (${stray.ticket}) — nada será trabalhado`);
+  }
+  if (stray.context) {
+    lines.push(`${said} escreveu CONTEXT assim mesmo — ninguém vai ler, e é nesse campo que ticket fechado volta como aberto`);
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -697,6 +763,10 @@ export function formatInvalidSummary(invalid) {
   if (!invalid) return "";
   if (invalid.kind === "claim-writes") {
     return `a Orientação devolveu um CLAIM que ${invalid.does} em vez de reivindicar o ticket: ${invalid.detail}`;
+  }
+  if (invalid.kind === "ready-without-context") {
+    const said = invalid.detail ? ` (CONTEXT: ${invalid.detail})` : "";
+    return `a Orientação devolveu STATUS: ready sem CONTEXT${said} — a iteração trabalharia às cegas`;
   }
   const said = invalid.detail ? ` (TICKET: ${invalid.detail})` : "";
   return `a Orientação devolveu STATUS: ready sem nomear ticket${said} — a iteração trabalharia às cegas`;
