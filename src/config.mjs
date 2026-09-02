@@ -31,13 +31,16 @@ export const DEFAULTS = {
   extraMounts: [],
   /** Branches em que o Ralph pode rodar sem --allow-branch. */
   protectedBranches: ["main", "master"],
-  /** Override do env de embeddings do servidor MCP efêmero do code-review-graph
-   *  (`CRG_OPENAI_API_KEY`/`_BASE_URL`/`_MODEL`/`_DIMENSION`, ver
-   *  knowledge-index.mjs) — vence, chave a chave, o que o Ralph já lê do
-   *  `.mcp.json` do alvo (issue #20). Só precisa disto quem quer um valor
-   *  diferente do declarado lá, ou não tem `.mcp.json` nenhum; endereço de
-   *  loopback em `CRG_OPENAI_BASE_URL` é traduzido pro host do Docker
-   *  automaticamente. */
+  /** Env de embeddings do servidor MCP efêmero do code-review-graph: as
+   *  variáveis de ambiente com que o servidor do índice já roda no host.
+   *  Quantas são e como se chamam é contrato do code-review-graph, não do
+   *  Ralph — a lista que este comentário enumerava envelheceu em silêncio
+   *  (issue #22), e o `.mcp.json` do repositório alvo é a que acompanha o
+   *  projeto. Daí o Ralph ler o env declarado lá (issue #20) e este campo
+   *  vencer chave a chave, para quem não tem `.mcp.json` ou quer valor
+   *  diferente dentro do sandbox. Endereço de loopback na URL de base é
+   *  traduzido pro host do Docker automaticamente (`mcpServerFor`,
+   *  knowledge-index.mjs). */
   crgEmbeddingEnv: {},
   /** Segundos de espera entre iterações do AFK. */
   cooldownSeconds: 0,

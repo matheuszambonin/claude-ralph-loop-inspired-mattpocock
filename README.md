@@ -215,6 +215,7 @@ repositório alvo (Issues: read/write, Contents: read) e passe
   "sandboxName": "ralph-meu-repo-1feo4ed",
   "extraMounts": [],              // "C:\\caminho" ou "C:\\caminho:ro"
   "protectedBranches": ["main", "master"],
+  "crgEmbeddingEnv": {},          // env de embeddings do índice de conhecimento
   "cooldownSeconds": 0,
   "iterationTimeoutSeconds": 3600, // teto de tempo de uma iteração
   "feedbackLoops": [              // detectado do package.json no init
@@ -239,6 +240,20 @@ processo principal, e o loop segue para a próxima.
 comandos que o agente é proibido de contornar antes de commitar — sem eles,
 Ralph commita às cegas. Se o repo não é Node, preencha à mão (`cargo test`,
 `pytest -q`, `mise run check`, o que for).
+
+`crgEmbeddingEnv` só existe para repositório que tem índice de conhecimento
+(`code-review-graph`). São as variáveis de ambiente que o servidor do índice
+precisa para embeddar, as mesmas com que ele já roda no host. Quais são elas
+é pergunta para o `code-review-graph`, não para o Ralph. Quem responde é o
+`.mcp.json` do repositório alvo, que muda junto com o projeto, e por isso o
+Ralph lê o env declarado lá e usa como está. `crgEmbeddingEnv` sobrescreve
+chave a chave, para quem não tem `.mcp.json` ou quer um valor diferente dentro
+do sandbox. Endereço de loopback vira o host do Docker automaticamente, então
+escreva como se estivesse fora do container.
+
+Sem provedor resolvido nas duas origens, `ralph doctor` avisa em amarelo. A
+busca semântica fica de fora, e as outras tools do índice continuam
+respondendo.
 
 ## Night mode
 

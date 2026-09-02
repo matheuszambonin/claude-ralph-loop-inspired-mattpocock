@@ -27,6 +27,7 @@ import {
   describeAvailability as describeKnowledgeIndexAvailability,
   describeDegradation as describeKnowledgeIndexDegradation,
   describeInstallFailure as describeKnowledgeIndexInstallFailure,
+  describeMissingEmbeddingEnv,
   needsEmbeddingProbe,
   probe as probeKnowledgeIndex,
   clearProbeStamp,
@@ -265,9 +266,17 @@ async function cmdDoctor(flags) {
   // onde rodar o pedido real. Repositório sem code-review-graph nunca chega aqui.
   if (needsEmbeddingProbe(detectedIndexes)) {
     const embeddingEnv = resolveEmbeddingEnv(readTargetMcpConfig(root), cfg.crgEmbeddingEnv);
-    const probed = await probeKnowledgeIndex(cfg.sandboxName, embeddingEnv);
-    const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
-    degradation ? warn(degradation) : ok(describeKnowledgeIndexAvailability(detectedIndexes));
+    // Env vazio nas duas origens sai por aqui, antes da sonda (issue #22): não
+    // há endereço nem modelo para provar, e a linha de degradação diria
+    // "nenhum endereço sondado", que de propósito não afirma qual das duas
+    // causas é. Este aviso afirma, e nomeia o campo que conserta.
+    const missing = describeMissingEmbeddingEnv(detectedIndexes, embeddingEnv);
+    if (missing) warn(missing);
+    else {
+      const probed = await probeKnowledgeIndex(cfg.sandboxName, embeddingEnv);
+      const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
+      degradation ? warn(degradation) : ok(describeKnowledgeIndexAvailability(detectedIndexes));
+    }
   }
 
   // Night mode (issue #33/#40): o gate é a flag explícita `--night`, não a
