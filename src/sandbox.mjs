@@ -190,9 +190,9 @@ export function describeWorkspacesOutsideLocalDisk(mounts, volumes) {
       (v) =>
         `workspace do sandbox no volume ${v.letter}: — sistema de arquivos ${v.fileSystem}, ` +
         `rótulo ${v.label ? `"${v.label}"` : "sem rótulo"}; disco local no Windows reporta ${LOCAL_DISK_FILESYSTEM}.\n` +
-        "  O compartilhamento de arquivos do docker sandbox é virtiofs, e criar sandbox com workspace num volume\n" +
-        "  que reporta FAT32 e disco fixo — como o Google Drive File Stream se apresenta — já foi observado\n" +
-        "  terminando em EINVAL (issue #24). Se for esse o caso deste volume, um clone em disco local é a saída."
+        "  O compartilhamento de arquivos do docker sandbox é virtiofs. O caso já observado terminando em\n" +
+        "  EINVAL foi um volume que reporta FAT32 e disco fixo, que é como o Google Drive File Stream se\n" +
+        "  apresenta (issue #24). Se for esse o caso deste volume, um clone em disco local é a saída."
     );
 }
 

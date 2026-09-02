@@ -219,7 +219,7 @@ test("describeWorkspacesOutsideLocalDisk: a linha relata o que foi colhido e nã
   assert.doesNotMatch(line, /vai falhar|falhará|não vai funcionar|não funcionará|não vai dar|impossível/i);
   // O tom pelo lado positivo, para uma reescrita futura não passar batida: o
   // que se afirma é o que já foi observado, e a conclusão fica condicionada.
-  assert.match(line, /já foi observado/);
+  assert.match(line, /já observado/);
   assert.match(line, /Se for esse o caso/);
 });
 
@@ -256,6 +256,15 @@ test("describeWorkspacesOutsideLocalDisk: mounts ausentes ou sem letra de volume
 test("describeWorkspacesOutsideLocalDisk: a letra do workspace casa com a do volume sem depender de caixa", () => {
   const [line] = describeWorkspacesOutsideLocalDisk(["g:\\repo"], [{ letter: "g", fileSystem: "exFAT", label: "" }]);
   assert.match(line, /exFAT/);
+});
+
+test("describeWorkspacesOutsideLocalDisk: FAT32 é o caso já observado, nunca o sistema de arquivos deste volume", () => {
+  const [line] = describeWorkspacesOutsideLocalDisk(["g:"], [{ letter: "g", fileSystem: "exFAT", label: "" }]);
+  assert.match(line, /sistema de arquivos exFAT/);
+  assert.ok(
+    line.indexOf("FAT32") > line.indexOf("caso já observado"),
+    "FAT32 precisa vir depois da atribuição ao caso observado, e não descrever o volume colhido",
+  );
 });
 
 test("describeWorkspacesOutsideLocalDisk: `letter` vale tanto como letra crua quanto como DeviceID do Windows", () => {
