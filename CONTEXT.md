@@ -140,3 +140,24 @@ com teto próprio em cada uma, porque a **Orientação** que lê e relata não
 deveria repetir nada, enquanto o processo principal roda a mesma suíte de novo
 de forma legítima.
 _Avoid_: detecção de loop, anti-loop, watchdog
+
+**Fronteira**:
+Os tickets do repositório alvo que uma iteração pode pegar agora: rótulo de
+pronto para agente, bloqueador nenhum em aberto, ninguém trabalhando neles.
+Quem a define é o tracker do alvo, e o Ralph só a lê. Estar na fronteira não é
+o mesmo que ter trabalho: uma spec cujos filhos estão todos entregues continua
+lá até alguém tirar o rótulo, e foi assim que duas Orientações mandaram
+implementar o que já existia. A distinção é da **Orientação**, que lê o
+repositório e o diário e sabe dizer; nunca do Ralph, que não consulta tracker
+nenhum (ADR-0010).
+_Avoid_: frontier, fila, backlog, próximo ticket
+
+**Corte por resumo inválido**:
+Matar a iteração porque o **Resumo de orientação** veio errado — um `CLAIM` que
+é comando de escrita em vez de reivindicação, um `ready` sem ticket. É o
+avesso do **Corte por orientação**: ali o Ralph obedece ao relatório, aqui
+desconfia dele. Lê só o texto do resumo, e é por isso que alcança tão pouco:
+tudo que exigiria perguntar ao tracker fica fora, por escolha (ADR-0010).
+Como o **Corte por laço**, mata a iteração e deixa o loop seguir — o defeito é
+da resposta que aquele contexto produziu, e o próximo nasce limpo.
+_Avoid_: validação do contrato, corte por claim, sanity check
