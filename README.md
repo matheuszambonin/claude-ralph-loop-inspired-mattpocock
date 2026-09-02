@@ -257,8 +257,8 @@ chave a chave, para quem não tem `.mcp.json` ou quer um valor diferente dentro
 do sandbox. Endereço de loopback vira o host do Docker automaticamente, então
 escreva como se estivesse fora do container.
 
-Sem provedor resolvido nas duas origens, `ralph doctor` avisa em amarelo. A
-busca semântica fica de fora, e as outras tools do índice continuam
+Sem provedor de embeddings resolvido nas duas origens, `ralph doctor` avisa em
+amarelo. A busca semântica fica de fora, e as outras tools do índice continuam
 respondendo.
 
 ## Night mode

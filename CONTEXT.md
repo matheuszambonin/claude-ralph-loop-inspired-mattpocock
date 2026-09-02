@@ -51,6 +51,16 @@ Uma implementação concreta de índice de conhecimento, com seu próprio jeito 
 ser consultada. Um repositório pode ter vários ao mesmo tempo.
 _Avoid_: provider, engine, motor
 
+**Provedor de embeddings**:
+De onde vem o vetor da consulta na busca semântica de um **Índice de
+conhecimento**. Não é o **Backend**, que é o índice consultado, nem o
+**Provedor**, que é quem pensa a iteração; pode ser o mesmo Ollama que este sem
+ser o mesmo papel. Existe quando endereço e modelo estão resolvidos, e quem
+declara os dois é primeiro o repositório alvo. A configuração do Ralph
+sobrescreve, não origina. Sem modelo declarado não existe, e a busca semântica
+sai da sessão.
+_Avoid_: Ollama, backend de embeddings, provedor (sozinho, é o outro)
+
 **Iteração**:
 Uma passagem completa do loop sobre o repositório alvo: começa sem memória
 nenhuma, entrega no máximo um ticket e termina esquecendo tudo. É ao mesmo
@@ -91,8 +101,9 @@ _Avoid_: briefing, contexto, relatório
 **Provedor**:
 De onde vem a inferência de uma iteração. Não se confunde com **Backend**, que
 é implementação de índice de conhecimento: um responde "quem pensa", o outro
-"onde está X". Vale para a iteração inteira, não por fase — a Orientação roda
-como subagente do mesmo processo, e a base URL é do processo. O que cada fase
+"onde está X". Nem com o **Provedor de embeddings**, que serve à busca desse
+outro. Vale para a iteração inteira, não por fase — a Orientação roda como
+subagente do mesmo processo, e a base URL é do processo. O que cada fase
 escolhe dentro do Provedor é o modelo.
 _Avoid_: backend, motor, engine, modelo
 
