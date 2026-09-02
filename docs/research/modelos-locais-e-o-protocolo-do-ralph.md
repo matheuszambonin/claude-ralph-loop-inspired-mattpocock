@@ -470,3 +470,54 @@ Ralph pode fazer é o que ele já fez com o `STATUS` na issue #79: tirar a decis
 do modelo e pôr do lado de fora, onde uma comparação de string decide. Cada regra
 do prompt que sobreviver a essa mudança é uma regra que não depende de o modelo
 local ser melhor do que ele é.
+
+## Adendo, 02/09/2026: o que a réplica não reproduziu
+
+O veredito acima diz que os três sintomas são capacidade dos modelos. A réplica
+do dia seguinte enfraquece essa afirmação para o sintoma 1, e derruba a parte
+dela que dizia que configuração não muda nada.
+
+Um canário curto mede o sintoma isolado: uma ferramenta `read_file`, um arquivo
+inexistente, e a instrução "se o arquivo não existe, responda MISSING e pare;
+nunca chame `read_file` duas vezes com o mesmo caminho". O script está em
+`scratchpad/canario-laco.mjs` da sessão que o escreveu, e fala com
+`POST /v1/messages` do Ollama sem o Claude Code no meio.
+
+| Cenário | Modelo | Resultado |
+|---|---|---|
+| API do Ollama direto | `ornith:9b` | 1 chamada, responde `MISSING` |
+| API do Ollama direto | `qwen2.5:14b-instruct` | 1 chamada, responde `MISSING` |
+| API do Ollama direto | `deepseek-r1:14b` | responde `MISSING` sem chamar ferramenta, 85 s |
+| API do Ollama direto | `qwen2.5-coder:14b` | escreve a chamada como texto solto, nunca emite `tool_use` |
+| Claude Code, diretório vazio, 1 ferramenta | `ornith:9b` | 1 chamada, `MISSING` |
+| Claude Code, subagente por `--agents` | `ornith:9b` | delega, subagente lê uma vez, volta |
+| Claude Code no Terraços, 32 ferramentas, 74 skills | `ornith:9b` | 1 chamada, `MISSING` |
+| Dentro do sandbox, 40 ferramentas, 93 skills, cc 2.1.221 | `ornith:9b` | 1 chamada, `MISSING` |
+
+Oito cenários, nenhum laço. O `ornith:9b` das 84 leituras repetidas não
+reapareceu, nem no ambiente mais pesado de todos, que é o de dentro do sandbox
+com a versão antiga do Claude Code.
+
+O que a réplica mediu depois vale mais. O prompt de Orientação de verdade, o que
+`buildOrientationPrompt` monta, rodado sozinho dentro do sandbox contra o
+Terraços com o frontier vazio: `STATUS: complete`, `TICKET` vazio, `CLAIM`
+vazio, 33 segundos, seis chamadas distintas, nenhuma repetida. E a rodada
+`ralph once --night` inteira, `ornith:9b` nos dois papéis: `STATUS: blocked`,
+`TICKET` vazio, iteração cortada antes de tocar no repositório
+(`.ralph/logs/2026-09-02T12-05-16-428Z-iter-01.jsonl`, linhas 141-142).
+
+A diferença entre esse desfecho e o dos logs A e B não é o modelo, é a tarefa. O
+laço do log A caiu sobre `git show 017d6bc --stat` enquanto a Orientação tentava
+confirmar uma entrega já feita, e o `ready` do log B nomeou um ticket fechado.
+Nas duas, o frontier estava vazio e o prompt daquele dia ainda não dizia que
+frontier vazio é resposta. Com a regra escrita, a mesma pergunta tem saída, e o
+mesmo modelo a toma em 33 segundos.
+
+Fica de pé do documento original: o `qwen2.5-coder:14b` mente sobre tool calling
+e a sonda do `ralph doctor --night` o reprova; o `qwen3-coder:30b` não cabe nesta
+GPU com contexto útil, e os 36 minutos de buraco são de máquina; e a
+recomendação de ler o `CLAIM` e o estado do ticket do lado de fora, que não
+depende de nada disso.
+
+Cai o "não" da coluna "configuração conserta" para o sintoma 1. Um prompt que dá
+saída para a pergunta é configuração, e ele consertou.
