@@ -129,6 +129,12 @@ O que é montado (`ralph mounts` mostra):
 
 O seu home, suas chaves SSH e o resto do sistema ficam de fora.
 
+Repo que vive fora de disco local — Google Drive File Stream, OneDrive, volume
+de rede mapeado — não monta. O compartilhamento de arquivos do `docker sandbox`
+é virtiofs, e ele falha antes do boot da VM. O `ralph doctor` avisa e o
+`ralph login` explica; o que não existe é um modo sem sandbox para contornar
+(ADR-0011). A saída é trabalhar num clone em disco local.
+
 ### Autenticação
 
 O sandbox é uma máquina separada: o token do host **não** é herdado. O Claude
