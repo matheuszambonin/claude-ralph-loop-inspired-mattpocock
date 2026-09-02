@@ -388,13 +388,15 @@ export function resolveEmbeddingEnv(targetMcpConfig, override = {}) {
  * Ollama já filtrou (ADR-0003). `graphify` não sobe MCP (é lido em prosa),
  * então devolve `null` para qualquer outro id.
  *
- * `embeddingEnv` é o único jeito de ligar a busca semântica de verdade: o
- * provedor de embeddings do `code-review-graph` (`CRG_OPENAI_API_KEY` +
- * `CRG_OPENAI_BASE_URL` + `CRG_OPENAI_MODEL`, verificado no código upstream)
- * são segredo e modelo que só o operador sabe — Ralph não inventa nenhum dos
- * dois, só traduz o endereço de loopback de `CRG_OPENAI_BASE_URL`, venha ele
- * do `.mcp.json` do alvo ou de `crgEmbeddingEnv` (`resolveEmbeddingEnv` já
- * resolveu os dois antes de chegar aqui).
+ * `embeddingEnv` é o único jeito de ligar a busca semântica de verdade: o que
+ * o provedor de embeddings exige é segredo e configuração que só o operador
+ * sabe, e o Ralph não inventa nada disso. Quantas variáveis são e como se
+ * chamam é contrato do `code-review-graph` — a lista que este comentário
+ * carregava ficou em três enquanto o alvo real declarava quatro (issue #22) —,
+ * então o env passa inteiro, sem filtro por nome. A única chave que o Ralph toca é
+ * `CRG_OPENAI_BASE_URL`, e só para traduzir loopback pro host do Docker; venha
+ * ela do `.mcp.json` do alvo ou de `crgEmbeddingEnv`, `resolveEmbeddingEnv` já
+ * resolveu os dois antes de chegar aqui.
  */
 function mcpServerFor(id, containerRoot, tools, embeddingEnv) {
   if (id !== CRG_ID || !tools.length) return null;
@@ -645,6 +647,38 @@ export function describeAvailability(detected) {
 }
 
 /**
+ * Linha de aviso amarela para o `doctor` quando há `code-review-graph`
+ * detectado e nenhuma das duas origens resolveu provedor de embeddings — nem o
+ * `.mcp.json` do alvo, nem `crgEmbeddingEnv` (issue #22). É o momento em que a
+ * informação importa: sem provedor não há o que sondar, e `describeDegradation`
+ * cairia na frase de "nenhum endereço sondado", que de propósito não afirma
+ * qual das duas causas é.
+ *
+ * "Resolvido" é o que `embeddingTarget` responde, não a contagem de chaves do
+ * env: um `.mcp.json` que declare a chave de API e esqueça o modelo tem env, e
+ * não tem provedor. Contar chaves calaria justo aí, e a frase afirmaria "nenhum
+ * provedor" sobre um fato que não conferiu.
+ *
+ * Não enumera as variáveis, e não é economia de texto: quais são elas é
+ * contrato do `code-review-graph`, e a lista que este módulo carregava em
+ * comentário já divergiu do alvo real em silêncio (três, contra as quatro que
+ * o `.mcp.json` do Terraços declara). Por isso a frase aponta a origem — o env
+ * com que o servidor do índice já roda no host — e mostra a forma do campo,
+ * não o conteúdo dele.
+ */
+export function describeMissingEmbeddingEnv(detected, embeddingEnv) {
+  if (!needsEmbeddingProbe(detected)) return null;
+  if (embeddingTarget(embeddingEnv ?? {})) return null;
+  return (
+    "busca semântica do code-review-graph indisponível: nenhum provedor de embeddings resolvido. " +
+    "Nem o .mcp.json do repositório alvo nem crgEmbeddingEnv, em .ralph/config.json, declaram o env " +
+    "que o servidor do índice precisa para embeddar. As outras tools do índice continuam funcionando. " +
+    'Para ligar, declare em "crgEmbeddingEnv": { "NOME_DA_VARIAVEL": "valor" } o env com que o servidor ' +
+    "do índice já roda no host."
+  );
+}
+
+/**
  * Linha de aviso amarela para o `doctor` quando a busca semântica degradou —
  * `null` quando não há `code-review-graph` detectado ou quando o provedor de
  * embeddings respondeu. Erro de usuário diz o comando que conserta (CLAUDE.md).
@@ -659,11 +693,12 @@ export function describeDegradation(detected, probeResult) {
   if (!needsEmbeddingProbe(detected)) return null;
   if (probeResult?.reachable) return null;
   if (!probeResult?.address) {
-    // `address` ausente cobre dois casos que esta função não distingue (não
-    // recebe `embeddingEnv` pra saber qual): `embeddingTarget` devolveu `null`
-    // porque nenhum CRG_OPENAI_MODEL foi declarado, ou a sonda simplesmente
-    // ainda não rodou (`probeResult` nulo/indefinido). A frase não afirma
-    // qual dos dois é — afirmar a causa errada seria pior que ser genérico.
+    // `address` ausente cobria dois casos que esta função não distingue (não
+    // recebe `embeddingEnv` pra saber qual): provedor nenhum declarado, ou a
+    // sonda que ainda não rodou. Desde a issue #22 o `doctor` pega o primeiro
+    // antes da sonda, com `describeMissingEmbeddingEnv`, que nomeia o campo
+    // que conserta — aqui sobra a guarda para o segundo. A frase segue sem
+    // afirmar qual é: afirmar a causa errada seria pior que ser genérico.
     return (
       "busca semântica do code-review-graph indisponível: nenhum endereço sondado — " +
       "CRG_OPENAI_MODEL pode não estar declarado (nem no .mcp.json do alvo, nem em crgEmbeddingEnv), " +
@@ -672,7 +707,7 @@ export function describeDegradation(detected, probeResult) {
   }
   const fix = probeResult.isOllama
     ? "rode o Ollama do host com OLLAMA_HOST=0.0.0.0, confirme que o modelo declarado está baixado e reinicie o serviço."
-    : "confira o endereço, a chave e o modelo declarados em CRG_OPENAI_* (via .mcp.json do alvo ou crgEmbeddingEnv).";
+    : "confira o env de embeddings declarado para o servidor do índice, no .mcp.json do alvo ou em crgEmbeddingEnv.";
   return (
     `busca semântica do code-review-graph indisponível: pedido de embedding contra ${probeResult.address} falhou. ` +
     `As outras nove tools do índice continuam funcionando. Para religar: ${fix}`

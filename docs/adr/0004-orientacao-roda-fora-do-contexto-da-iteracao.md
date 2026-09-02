@@ -54,7 +54,9 @@ delegar: uma. Na segunda invocação já se foram $0,42 dos $0,75.
 A whitelist de tools é estrita e é o que segura o custo do subagente: reduzi-la
 levou o `subagent_tokens` de 16.192 para 3.728 (−77%). `Bash` sozinho custa
 ~2k, e `Bash(gh *)` **não** restringe nada — o subagente recebe `Bash` puro.
-Sem `Edit` e sem `Write`: quem orienta não escreve.
+Sem `Edit` e sem `Write`: quem orienta não escreve arquivo. No tracker a
+whitelist não alcança — `gh issue close` sai pelo mesmo `Bash` que o `gh issue
+list` precisa (issue #77), e ali quem segura é a linha do prompt.
 
 A medição por modelo vinha antes de tudo, e foi feita (`e19db04`). O que falta
 é rodar: a variação natural de uma iteração vai de $0,22 a $4,11, e enquanto

@@ -31,16 +31,25 @@ export const DEFAULTS = {
   extraMounts: [],
   /** Branches em que o Ralph pode rodar sem --allow-branch. */
   protectedBranches: ["main", "master"],
-  /** Override do env de embeddings do servidor MCP efêmero do code-review-graph
-   *  (`CRG_OPENAI_API_KEY`/`_BASE_URL`/`_MODEL`/`_DIMENSION`, ver
-   *  knowledge-index.mjs) — vence, chave a chave, o que o Ralph já lê do
-   *  `.mcp.json` do alvo (issue #20). Só precisa disto quem quer um valor
-   *  diferente do declarado lá, ou não tem `.mcp.json` nenhum; endereço de
-   *  loopback em `CRG_OPENAI_BASE_URL` é traduzido pro host do Docker
-   *  automaticamente. */
+  /** Env de embeddings do servidor MCP efêmero do code-review-graph: as
+   *  variáveis de ambiente com que o servidor do índice já roda no host.
+   *  Quantas são e como se chamam é contrato do code-review-graph, não do
+   *  Ralph — a lista que este comentário enumerava envelheceu em silêncio
+   *  (issue #22), e o `.mcp.json` do repositório alvo é a que acompanha o
+   *  projeto. Daí o Ralph ler o env declarado lá (issue #20) e este campo
+   *  vencer chave a chave, para quem não tem `.mcp.json` ou quer valor
+   *  diferente dentro do sandbox. Endereço de loopback na URL de base é
+   *  traduzido pro host do Docker automaticamente (`mcpServerFor`,
+   *  knowledge-index.mjs). */
   crgEmbeddingEnv: {},
   /** Segundos de espera entre iterações do AFK. */
   cooldownSeconds: 0,
+  /** Teto de tempo de uma iteração, em segundos. O README explica a escolha do
+   *  operador; o que está medido é o bug que abriu a issue #67: o subagente de
+   *  Orientação entrou em laço fechado repetindo a mesma chamada 64 vezes, com
+   *  o agente principal parado em `TaskOutput(block:true)`, e só parou porque
+   *  havia um humano olhando — o cenário que o AFK existe para dispensar. */
+  iterationTimeoutSeconds: 3600,
   /** Provedor local (Ollama) para `--night` (issue #29/#40) — padrão validado
    *  nas três provas contra a máquina de referência do épico, não um chute.
    *  Único campo aninhado com padrão não-vazio: `loadConfig` o mescla um
@@ -72,6 +81,12 @@ export const DEFAULTS = {
     // única dimensão que o conceito declara não medir — velocidade. Quem tem
     // máquina lenta e paciência declara sua paciência aqui.
     probeTimeoutSeconds: 900,
+    // quantos tokens a iteração pode escrever numa resposta, via
+    // CLAUDE_CODE_MAX_OUTPUT_TOKENS (issue #69). O dobro do padrão do Claude
+    // Code, dimensionado para quem responde direto e não para o modelo que
+    // gasta o orçamento raciocinando antes — a iteração que morreu por isso
+    // está contada em `renderEnv`, src/provider.mjs.
+    maxOutputTokens: 64000,
   },
 };
 
@@ -99,14 +114,30 @@ export function loadConfig(root) {
   // `model`. Caso especial enquanto for o único (issue #40); generalizar
   // antes de existir um segundo campo assim é preparo para ninguém.
   cfg.nightProvider = { ...DEFAULTS.nightProvider, ...user.nightProvider };
-  assertNightNumber("probeTimeoutSeconds", cfg.nightProvider.probeTimeoutSeconds, {
+  assertNumberField("nightProvider.probeTimeoutSeconds", cfg.nightProvider.probeTimeoutSeconds, {
     max: MAX_PROBE_TIMEOUT_SECONDS,
     unit: "segundos",
+    fallback: DEFAULTS.nightProvider.probeTimeoutSeconds,
   });
-  assertNightNumber("minContext", cfg.nightProvider.minContext, {
+  assertNumberField("nightProvider.minContext", cfg.nightProvider.minContext, {
     max: MAX_MIN_CONTEXT,
     unit: "tokens",
     integer: true,
+    fallback: DEFAULTS.nightProvider.minContext,
+  });
+  // Sem esta guarda, `"32k"` não estoura aqui: viaja como variável de ambiente
+  // e a iteração morre do outro lado, pelo mesmo erro que o campo existe para
+  // evitar.
+  assertNumberField("nightProvider.maxOutputTokens", cfg.nightProvider.maxOutputTokens, {
+    max: MAX_OUTPUT_TOKENS,
+    unit: "tokens",
+    integer: true,
+    fallback: DEFAULTS.nightProvider.maxOutputTokens,
+  });
+  assertNumberField("iterationTimeoutSeconds", cfg.iterationTimeoutSeconds, {
+    max: MAX_ITERATION_TIMEOUT_SECONDS,
+    unit: "segundos",
+    fallback: DEFAULTS.iterationTimeoutSeconds,
   });
   cfg.sandboxName ||= sandboxNameFor(root);
   return cfg;
@@ -126,20 +157,32 @@ const MAX_PROBE_TIMEOUT_SECONDS = 4_294_967;
 // acima do que qualquer modelo local aceita e ainda monta sem estourar.
 const MAX_MIN_CONTEXT = 10_000_000;
 
+// `setTimeout` guarda o atraso num inteiro de 32 bits com sinal: acima disso
+// ele avisa e dispara na hora, e o teto de uma iteração viraria o oposto do
+// que o campo promete — toda iteração morta no primeiro instante.
+const MAX_ITERATION_TIMEOUT_SECONDS = 2_147_483;
+
+// Este teto não é físico como os dois de cima: nada quebra no Ralph com um
+// número grande, ele só viaja para o outro lado. O que ele pega é o dígito a
+// mais e a unidade colada, porque nenhum modelo escreve um milhão de tokens
+// numa resposta. Quanto o modelo de fato aceita continua sendo pergunta para
+// ele — declarar acima disso é erro que só aparece na iteração.
+const MAX_OUTPUT_TOKENS = 1_000_000;
+
 /**
- * Guarda de campo numérico do `nightProvider` (issues #57 e #60). Ela existe
- * porque errar aqui não produz erro de config: produz exceção lá dentro da
- * sonda, onde as três provas engolem tudo por projeto e o veredito sai como
- * prescrição sobre o modelo. Daí a mensagem dizer o valor que veio, o que o
- * campo aceita e a edição que conserta.
+ * Guarda de campo numérico (issues #57, #60 e #67). Ela existe porque errar
+ * aqui não produz erro de config: produz um teto que dispara na hora, ou uma
+ * exceção lá dentro da sonda, onde as três provas engolem tudo por projeto e o
+ * veredito sai como prescrição sobre o modelo. Daí a mensagem dizer o valor que
+ * veio, o que o campo aceita e a edição que conserta.
  */
-function assertNightNumber(field, value, { max, unit, integer = false }) {
+function assertNumberField(field, value, { max, unit, integer = false, fallback }) {
   const wellFormed = integer ? Number.isInteger(value) : Number.isFinite(value);
   if (wellFormed && value > 0 && value <= max) return;
   throw new Error(
-    `.ralph/config.json: nightProvider.${field} é ${JSON.stringify(value)}, e precisa ser ` +
+    `.ralph/config.json: ${field} é ${JSON.stringify(value)}, e precisa ser ` +
       `um número de ${unit} entre 0 e ${max}. Escreva o número puro, sem unidade ` +
-      `(o padrão é ${DEFAULTS.nightProvider[field]}), ou apague o campo para herdá-lo.`,
+      `(o padrão é ${fallback}), ou apague o campo para herdá-lo.`,
   );
 }
 

@@ -22,8 +22,9 @@ A saída que preservaria as duas coisas seria um proxy no meio, roteando por
 modelo para o Ollama ou para a Anthropic. Rejeitada pelo que ela custa contra o
 que ela substitui: o night mode existe para **não** gastar, e um tradutor de
 protocolo local seria a peça mais cara de manter do desenho inteiro — enquanto o
-desvio sem ele são duas variáveis de ambiente, porque o Ollama fala a Messages
-API nativamente em `/v1/messages` desde a 0.14.0. Sem proxy, sem shim.
+desvio sem ele são três variáveis de ambiente (endereço, token e Orçamento de
+saída — a terceira entrou na issue #69), porque o Ollama fala a Messages API
+nativamente em `/v1/messages` desde a 0.14.0. Sem proxy, sem shim.
 
 ## Consequences
 

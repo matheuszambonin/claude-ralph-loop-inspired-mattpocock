@@ -91,6 +91,42 @@ else
   echo "· plugins: nenhuma origem montada (as skills do host não estarão disponíveis)"
 fi
 
+# --------------------------------------------------------------------- gh ----
+# A imagem do template traz o `gh` empacotado pelo Ubuntu, velho o bastante
+# para `gh issue view <n> --comments` reprovar contra o GitHub de hoje: ele
+# ainda pede `repository.issue.projectCards`, campo aposentado junto com os
+# Projects (classic). É o comando que `docs/agents/issue-tracker.md` prescreve
+# para ler um ticket (issue #80). O piso de versão e o que ele custa estão em
+# `describeSandboxGh`, em `src/sandbox.mjs`.
+install_official_gh() {
+  sudo install -m 0755 -d /etc/apt/keyrings &&
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg |
+    sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null &&
+  sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg &&
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" |
+    sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null &&
+  # Só a lista do GitHub: um `apt-get update` inteiro refaz Ubuntu e Docker por
+  # causa de um pacote, e cada byte disso atravessa o proxy do sandbox.
+  sudo apt-get update \
+    -o Dir::Etc::sourcelist=sources.list.d/github-cli.list \
+    -o Dir::Etc::sourceparts=- \
+    -o APT::Get::List-Cleanup=0 >/dev/null &&
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gh >/dev/null
+}
+
+# Falhar aqui não derruba o bootstrap. O proxy do sandbox filtra por domínio, e
+# um `cli.github.com` fechado não diz nada sobre a API do Claude — matar o
+# bootstrap por isso deixaria o Ralph inútil em todo repo alvo, inclusive nos
+# que nem usam GitHub como tracker. Quem cobra a versão instalada é o
+# `ralph doctor`, e é lá que o piso mora: uma fonte da verdade, não duas.
+if install_official_gh; then
+  echo "· $(gh --version | head -1)"
+else
+  echo "! o gh oficial não instalou; o sandbox segue com $(gh --version 2>/dev/null | head -1 || echo 'gh nenhum')."
+  echo "  Nessa faixa 'gh issue view <n> --comments' reprova e a leitura de ticket morre aqui dentro."
+  echo "  Libere cli.github.com no proxy do sandbox e rode 'ralph bootstrap --force'."
+fi
+
 # -------------------------------------------------------------------- git ----
 git config --global --get user.name  >/dev/null 2>&1 || git config --global user.name  "${RALPH_GIT_NAME:-Ralph}"
 git config --global --get user.email >/dev/null 2>&1 || git config --global user.email "${RALPH_GIT_EMAIL:-ralph@localhost}"

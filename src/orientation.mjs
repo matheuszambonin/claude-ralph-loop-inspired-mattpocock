@@ -85,6 +85,15 @@ export function buildOrientationAgent(promptText, cfg, indexTools = []) {
 const DELEGATION_MARKER = 'subagent_type: "orientation"';
 
 /**
+ * `entropy.md` e `test-coverage.md` não delegam, e são legítimos (ADR-0009).
+ * Quem for cobrar a Orientação de uma iteração pergunta aqui primeiro se o
+ * prompt dela chegou a prometer uma.
+ */
+export function delegatesOrientation(iterationPromptText) {
+  return iterationPromptText.includes(DELEGATION_MARKER);
+}
+
+/**
  * O bloco de contrato é o primeiro cercado por crase que contém uma linha
  * `STATUS:` — os dois prompts distribuídos colam o mesmo bloco de exemplo, e é
  * dele que a iteração de fato lê os rótulos e os estados aceitos.
@@ -122,7 +131,7 @@ function parseContract(block) {
  * a checar — `applicable: false`, nem passa nem reprova.
  */
 export function checkOrientationContract(iterationPromptText, orientationTemplateText) {
-  if (!iterationPromptText.includes(DELEGATION_MARKER)) return { applicable: false };
+  if (!delegatesOrientation(iterationPromptText)) return { applicable: false };
 
   const iterationBlock = contractBlock(iterationPromptText);
   const orientationBlock = contractBlock(orientationTemplateText);

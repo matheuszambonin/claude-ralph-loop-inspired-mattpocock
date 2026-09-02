@@ -7,13 +7,25 @@ you finish. Work on exactly ONE ticket, then stop.
 
 ## 1. Orient — delegate it
 
-Use the Agent tool with `subagent_type: "orientation"` to figure out which
-ticket to work on. It reads the issue tracker, `{{PROGRESS_FILE}}` and the
-project's docs, and reports back in this shape:
+Call the `Task` tool once, with all four of these:
+
+- `description: "orient"`
+- `subagent_type: "orientation"`
+- `run_in_background: false`
+- `prompt: "Pick the ticket for this iteration and report back."`
+
+`run_in_background: false` is what makes the report arrive as the result of
+this call; without it the tool only launches the subagent and hands you a
+receipt. The call is rejected without `description`. `TaskCreate`, `TaskUpdate`
+and `TaskOutput` are a different, unrelated API — none of them delegates.
+
+The subagent reads the issue tracker, `{{PROGRESS_FILE}}` and the project's
+docs, and reports back in this shape:
 
 ```
 STATUS: ready | complete | blocked
 TICKET: ...
+CLAIM: ...
 WHY: ...
 CONTEXT: ...
 ```
@@ -21,18 +33,25 @@ CONTEXT: ...
 Trust its `CONTEXT` instead of re-reading what it already read — every token
 you spend re-deriving what it found is a token you don't have for the ticket.
 
-If the report doesn't come back in that shape, or `CONTEXT` is empty, treat it
-as blocked: emit `<promise>{{BLOCKED_PROMISE}}</promise>` saying the
-orientation report was malformed, and stop. Do not run orientation again
-yourself.
+If the report doesn't come back in that shape, treat it as blocked: emit
+`<promise>{{BLOCKED_PROMISE}}</promise>` saying the orientation report was
+malformed, and stop. Do not run orientation again yourself. Under `ready` an
+empty `CONTEXT` is malformed the same way; under `complete` or `blocked` an
+empty `CONTEXT` is the shape the contract asks for.
 
 ## 2. Act on the report
 
 - `STATUS: complete` — emit `<promise>{{COMPLETION_PROMISE}}</promise>` and stop.
 - `STATUS: blocked` — emit `<promise>{{BLOCKED_PROMISE}}</promise>`, say why in
   one paragraph (from `WHY`), and stop.
-- `STATUS: ready` — claim `TICKET` before you touch any code, following
-  `docs/agents/issue-tracker.md`, so a parallel iteration doesn't take it too.
+- `STATUS: ready` — run `CLAIM` with `Bash` before you touch any code, so a
+  parallel iteration doesn't take it too. Claim it yourself: `orientation` is
+  the only subagent that exists, and `docs/agents/issue-tracker.md` is a
+  document, not an agent. If `CLAIM` came back empty, read that document and
+  run the command it prescribes; if it prescribes none, say so in your progress
+  entry and go on. A `CLAIM` that adds a triage label is not a claim, it is the
+  report promoting its own ticket: don't run it, emit
+  `<promise>{{BLOCKED_PROMISE}}</promise>` and stop.
 
 ## 3. Implement it
 
@@ -56,7 +75,8 @@ if a check is genuinely wrong, say so in your progress entry and leave it red.
 ## 5. Review
 
 Run `/mattpocock-skills:code-review` over your own diff and act on what it
-finds before committing.
+finds before committing. Use the full plugin-qualified name — bare
+`code-review` is a different, user-only skill and the call will be refused.
 
 ## 6. Record what happened
 
@@ -77,11 +97,20 @@ progress log poisons every context that follows it.
 Then close the ticket on the tracker, following
 `docs/agents/issue-tracker.md`.
 
+Sign it. The closing comment on the tracker ends with this line, copied
+verbatim:
+
+    {{SIGNATURE}}
+
+You can't rebuild that line from inside the sandbox, and without it the human
+reviewing the ticket months from now has no way back to the reasoning that
+produced the change.
+
 ## 7. Commit
 
-Commit to the current branch with a message that names the ticket. One
-iteration, one commit. Never push, never open a PR, never merge — the human
-decides what leaves this branch.
+Commit to the current branch with a message that names the ticket and ends with
+the same signature line. One iteration, one commit. Never push, never open a
+PR, never merge — the human decides what leaves this branch.
 
 ## Hard rules
 

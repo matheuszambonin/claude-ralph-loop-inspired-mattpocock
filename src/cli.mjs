@@ -15,8 +15,11 @@ import {
   allowHostLoopback,
   describeHostLoopbackOpened,
   mountsFor,
+  collectHostVolumes,
+  describeWorkspacesOutsideLocalDisk,
+  describeSandboxGh,
 } from "./sandbox.mjs";
-import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth } from "./runner.mjs";
+import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth, reportIterationTimeout, reportStuckLoop, reportInvalidSummary } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
 import {
   detect as detectKnowledgeIndex,
@@ -24,6 +27,7 @@ import {
   describeAvailability as describeKnowledgeIndexAvailability,
   describeDegradation as describeKnowledgeIndexDegradation,
   describeInstallFailure as describeKnowledgeIndexInstallFailure,
+  describeMissingEmbeddingEnv,
   needsEmbeddingProbe,
   probe as probeKnowledgeIndex,
   clearProbeStamp,
@@ -245,6 +249,12 @@ async function cmdDoctor(flags) {
   if (!(await dockerAvailable())) return bad("docker sandbox indisponível — Docker Desktop está rodando?");
   ok("docker sandbox disponível");
 
+  // Antes da checagem de existência porque é a linha seguinte — "será criado
+  // na primeira execução" — que este aviso qualifica (issue #27): num
+  // workspace fora de disco local, a criação é justamente o que pode nunca
+  // acontecer.
+  for (const line of describeWorkspacesOutsideLocalDisk(mountsFor(root, cfg), await collectHostVolumes())) warn(line);
+
   if (!(await sandboxExists(cfg.sandboxName))) {
     warn(`sandbox '${cfg.sandboxName}' ainda não existe (será criado na primeira execução)`);
     process.stdout.write(`\n  Depois: ${paint(C.bold, "ralph login")} para autenticar dentro dele.\n`);
@@ -256,9 +266,17 @@ async function cmdDoctor(flags) {
   // onde rodar o pedido real. Repositório sem code-review-graph nunca chega aqui.
   if (needsEmbeddingProbe(detectedIndexes)) {
     const embeddingEnv = resolveEmbeddingEnv(readTargetMcpConfig(root), cfg.crgEmbeddingEnv);
-    const probed = await probeKnowledgeIndex(cfg.sandboxName, embeddingEnv);
-    const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
-    degradation ? warn(degradation) : ok(describeKnowledgeIndexAvailability(detectedIndexes));
+    // Env vazio nas duas origens sai por aqui, antes da sonda (issue #22): não
+    // há endereço nem modelo para provar, e a linha de degradação diria
+    // "nenhum endereço sondado", que de propósito não afirma qual das duas
+    // causas é. Este aviso afirma, e nomeia o campo que conserta.
+    const missing = describeMissingEmbeddingEnv(detectedIndexes, embeddingEnv);
+    if (missing) warn(missing);
+    else {
+      const probed = await probeKnowledgeIndex(cfg.sandboxName, embeddingEnv);
+      const degradation = describeKnowledgeIndexDegradation(detectedIndexes, probed);
+      degradation ? warn(degradation) : ok(describeKnowledgeIndexAvailability(detectedIndexes));
+    }
   }
 
   // Night mode (issue #33/#40): o gate é a flag explícita `--night`, não a
@@ -321,6 +339,13 @@ async function cmdDoctor(flags) {
     gh.stdout.includes("Logged in")
       ? ok("gh autenticado no sandbox")
       : bad("gh NÃO autenticado no sandbox — rode 'ralph gh-login' (o tracker deste repo usa GitHub)");
+
+    // Autenticado não basta: o `gh` da imagem do template reprova ao ler a
+    // issue (issue #80). Dentro da mesma guarda do tracker porque a pergunta é
+    // a mesma — este repo depende do `gh` para saber o que fazer?
+    const version = await execCapture(cfg.sandboxName, ["bash", "-lc", "gh --version 2>&1 | head -1"]);
+    const ghVersion = describeSandboxGh(version.stdout);
+    if (ghVersion) (ghVersion.level === "ok" ? ok : warn)(ghVersion.message);
   }
   process.stdout.write("\n");
 }
@@ -412,7 +437,20 @@ async function cmdOnce(flags) {
   const res = await runIteration(root, cfg, { iteration: 1, total: 1, prompt, extraArgs: flags._passthrough ?? [], provider });
   if (res.complete) process.stdout.write(paint(C.green, "\n✓ backlog concluído.\n"));
   else if (res.blocked) process.stdout.write(paint(C.yellow, "\n■ Ralph pediu um humano.\n"));
-  process.exit(res.code === 0 ? 0 : 1);
+  // O teto (issue #67) vale no `once` também: sem esta linha a iteração morta
+  // pelo relógio sai só como código 1, e nem quem está assistindo saberia por quê.
+  else if (res.timedOut) reportIterationTimeout(root, cfg, res, 1);
+  // E o corte por laço (issue #74) pelo mesmo motivo: aqui quem assiste viu a
+  // iteração repetindo, mas quem lê o código de saída depois não viu nada.
+  else if (res.looped) reportStuckLoop(root, cfg, res, 1);
+  // E o corte por resumo inválido (issue #82) pelo mesmo motivo: sem a linha,
+  // o CLAIM que o Ralph recusou nunca chega a quem lê o código de saída.
+  else if (res.invalidSummary) reportInvalidSummary(root, res, 1);
+  // O corte por orientação (issue #79) é desfecho, não falha, e sairia com
+  // código 1 se ninguém dissesse o contrário: quem aborta o processo é o
+  // Ralph, e o `claude` morto não devolve 0. Só ele — a iteração que morreu
+  // por outro motivo continua saindo 1, mesmo tendo pensado a promise.
+  process.exit(res.haltStatus || res.code === 0 ? 0 : 1);
 }
 
 async function cmdAfk(flags) {

@@ -16,14 +16,14 @@ function writeConfig(root, contents) {
   writeFileSync(path.join(root, ".ralph", "config.json"), JSON.stringify(contents));
 }
 
-test("loadConfig: sem .ralph/config.json, nightProvider sai completo, com os seis campos", (t) => {
+test("loadConfig: sem .ralph/config.json, nightProvider sai completo, com os sete campos", (t) => {
   const root = tmpRepo(t);
   const cfg = loadConfig(root);
   assert.deepEqual(cfg.nightProvider, DEFAULTS.nightProvider);
-  assert.equal(Object.keys(cfg.nightProvider).length, 6);
+  assert.equal(Object.keys(cfg.nightProvider).length, 7);
 });
 
-test("loadConfig: config.json que só declara nightProvider.model herda baseUrl/keepAlive/minContext/probeTimeoutSeconds do padrão", (t) => {
+test("loadConfig: config.json que só declara nightProvider.model herda baseUrl/keepAlive/minContext/probeTimeoutSeconds/maxOutputTokens do padrão", (t) => {
   const root = tmpRepo(t);
   writeConfig(root, { nightProvider: { model: "qwen2.5-coder:14b" } });
   const cfg = loadConfig(root);
@@ -32,6 +32,41 @@ test("loadConfig: config.json que só declara nightProvider.model herda baseUrl/
   assert.equal(cfg.nightProvider.keepAlive, DEFAULTS.nightProvider.keepAlive);
   assert.equal(cfg.nightProvider.minContext, DEFAULTS.nightProvider.minContext);
   assert.equal(cfg.nightProvider.probeTimeoutSeconds, DEFAULTS.nightProvider.probeTimeoutSeconds);
+  assert.equal(cfg.nightProvider.maxOutputTokens, DEFAULTS.nightProvider.maxOutputTokens);
+});
+
+// O que importa no default não é o número, é ele passar do teto de 32000 do
+// Claude Code — foi ali que a iteração medida morreu (issue #69).
+test("loadConfig: o default de maxOutputTokens passa do teto que matou a iteração medida", (t) => {
+  const root = tmpRepo(t);
+  assert.ok(loadConfig(root).nightProvider.maxOutputTokens > 32000);
+});
+
+test("loadConfig: maxOutputTokens declarado vence o default e não derruba os outros campos", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { maxOutputTokens: 128000 } });
+  const cfg = loadConfig(root);
+  assert.equal(cfg.nightProvider.maxOutputTokens, 128000);
+  assert.equal(cfg.nightProvider.model, DEFAULTS.nightProvider.model);
+  assert.equal(cfg.nightProvider.minContext, DEFAULTS.nightProvider.minContext);
+});
+
+// O campo vira variável de ambiente do processo `claude`, então um valor torto
+// não estoura no Ralph: viaja pro outro lado e a iteração morre lá dentro.
+test("loadConfig: maxOutputTokens com unidade colada é erro de config, não iteração perdida", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { maxOutputTokens: "32k" } });
+  assert.throws(() => loadConfig(root), /maxOutputTokens/);
+});
+
+test("loadConfig: maxOutputTokens fracionário ou zero reprova — o teto é contado em tokens inteiros", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { nightProvider: { maxOutputTokens: 1.5 } });
+  assert.throws(() => loadConfig(root), /maxOutputTokens/);
+
+  const other = tmpRepo(t);
+  writeConfig(other, { nightProvider: { maxOutputTokens: 0 } });
+  assert.throws(() => loadConfig(other), /maxOutputTokens/);
 });
 
 // O teto do canário é do operador (issue #57): default generoso para quem não
@@ -147,4 +182,40 @@ test("withOverrides: --night --model <tag> sobre nightProvider já declarado pre
   assert.equal(result.nightProvider.model, "custom-tag");
   assert.equal(result.nightProvider.keepAlive, "30m");
   assert.equal(result.nightProvider.baseUrl, DEFAULTS.nightProvider.baseUrl);
+});
+
+// O teto de uma iteração é do operador (issue #67), como o do canário: o
+// default segura a noite inteira travada, e quem tem máquina lenta afrouxa.
+test("loadConfig: iterationTimeoutSeconds tem default, e um afk largado à noite não fica sem teto", (t) => {
+  const root = tmpRepo(t);
+  assert.equal(loadConfig(root).iterationTimeoutSeconds, DEFAULTS.iterationTimeoutSeconds);
+  assert.ok(DEFAULTS.iterationTimeoutSeconds > 0);
+});
+
+test("loadConfig: iterationTimeoutSeconds declarado vence o default", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { iterationTimeoutSeconds: 120 });
+  assert.equal(loadConfig(root).iterationTimeoutSeconds, 120);
+});
+
+// "30m" não vira erro de config sozinho: viraria um setTimeout com NaN, que
+// dispara na hora e mata toda iteração no primeiro instante.
+test("loadConfig: iterationTimeoutSeconds com unidade colada é erro de config, não teto que dispara na hora", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { iterationTimeoutSeconds: "30m" });
+  assert.throws(() => loadConfig(root), /iterationTimeoutSeconds/);
+});
+
+test("loadConfig: iterationTimeoutSeconds zero ou negativo reprova dizendo o que escrever no lugar", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { iterationTimeoutSeconds: 0 });
+  assert.throws(() => loadConfig(root), /iterationTimeoutSeconds é 0/);
+});
+
+// Acima do que o setTimeout aceita, o timer dispara no ato — o mesmo teto que
+// some, pelo outro extremo.
+test("loadConfig: iterationTimeoutSeconds acima do que o setTimeout aceita reprova", (t) => {
+  const root = tmpRepo(t);
+  writeConfig(root, { iterationTimeoutSeconds: 1e12 });
+  assert.throws(() => loadConfig(root), /iterationTimeoutSeconds/);
 });

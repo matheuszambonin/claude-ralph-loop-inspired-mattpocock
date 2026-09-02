@@ -9,6 +9,7 @@ import {
   buildOrientationPrompt,
   readOrientationTemplate,
   checkOrientationContract,
+  delegatesOrientation,
 } from "../src/orientation.mjs";
 import { ralphHome } from "../src/paths.mjs";
 
@@ -185,4 +186,126 @@ test("checkOrientationContract: os dois prompts distribuídos com a ferramenta b
   const result = checkOrientationContract(iterationPrompt, orientationTemplate);
   assert.equal(result.applicable, true);
   assert.equal(result.ok, true, result.issues.join("; "));
+});
+
+test("delegatesOrientation: separa o prompt que delega do que orienta inline (ADR-0009)", () => {
+  assert.equal(delegatesOrientation('Call the `Task` tool with `subagent_type: "orientation"`.'), true);
+  // `entropy.md` e `test-coverage.md` não delegam e são legítimos: sem este
+  // corte, o aviso da issue #66 tocaria em toda iteração deles.
+  assert.equal(delegatesOrientation("Pick the noisiest module and clean it up."), false);
+});
+
+/**
+ * Issue #73: quem orienta já lê o `docs/agents/issue-tracker.md` do alvo, então
+ * é o lado barato de descobrir o comando que reivindica. O "never invent one"
+ * não é prosa: sem ele, o Provedor local escreve um `gh issue edit --add-label
+ * in-progress` plausível contra um tracker que não tem esse rótulo.
+ */
+test("orientation.md: o resumo carrega o comando de claim, tirado do documento do alvo", () => {
+  const orientation = readOrientationTemplate();
+  assert.match(orientation, /^CLAIM: /m);
+  assert.match(orientation, /straight from docs\/agents\/issue-tracker\.md/);
+  assert.match(orientation, /Never\s+invent one/);
+  // A fase segue read-only (ADR-0004): ela reporta o comando, não o roda.
+  assert.match(orientation, /Do not claim the ticket/);
+});
+
+test("delegatesOrientation: o implement.md distribuído delega", () => {
+  const implement = readFileSync(path.join(ralphHome(), "prompts", "implement.md"), "utf8");
+  assert.equal(delegatesOrientation(implement), true);
+});
+
+/**
+ * Issue #77: numa iteração real a Orientação rodou `gh issue close` em dois
+ * tickets do alvo. O prompt só proibia `claim`, e a whitelist não alcança isso
+ * — ela precisa de `Bash` para o `gh issue list`, e `close`, `comment`, `edit`
+ * e `label` passam pelo mesmo binário. A linha do prompt é o que segura.
+ */
+test("orientation.md: a proibição de escrever no tracker nomeia os verbos, não só claim", () => {
+  const paragraphs = readOrientationTemplate().split(/\n\s*\n/);
+  const denial = paragraphs.find((p) => /Do not claim the ticket/.test(p));
+  assert.ok(denial, "nenhum parágrafo proíbe escrever no tracker");
+  for (const verb of ["claim", "close", "comment", "edit", "label"]) {
+    assert.ok(denial.includes(verb), `o prompt não proíbe '${verb}'`);
+  }
+});
+
+/**
+ * Issue #78: a Orientação relatou como aberta e em andamento uma issue que a
+ * iteração anterior fechara 43 minutos antes. O estado não veio da consulta —
+ * veio do comentário de *outra* issue, que o `gh issue list --json ...,comments`
+ * traz anexado na mesma leitura e que ninguém revisita quando o ticket fecha.
+ *
+ * A rodada de prova mostrou a segunda porta: `gh issue view 19 --comments`
+ * reprovou três vezes contra este GitHub (`projectCards` deprecado), e a
+ * Orientação preencheu o buraco com a mesma prosa. Consulta que falha não é
+ * consulta.
+ */
+test("orientation.md: o estado de um ticket vem da consulta a ele, e o resumo de orientação só nomeia ticket conferido", () => {
+  const paragraphs = readOrientationTemplate().split(/\n\s*\n/);
+  const rule = paragraphs.find((p) => /state of a ticket/i.test(p));
+  assert.ok(rule, "nenhum parágrafo diz de onde vem o estado de um ticket");
+  // O caso da issue: comentário e corpo de outra issue são pista, nunca estado.
+  // A polaridade entra na asserção — sem ela, um parágrafo que dissesse o
+  // oposto passaria só por citar as duas palavras.
+  assert.match(rule, /comment/i);
+  assert.match(rule, /body/i);
+  assert.match(rule, /never state/i);
+  assert.match(rule, /confirms nothing/i);
+  // E o resumo de orientação não pode nomear ticket que a iteração não conferiu.
+  assert.match(rule, /WHY/);
+  assert.match(rule, /CONTEXT/);
+  assert.match(rule, /this iteration/i);
+});
+
+/**
+ * Issue #81: com `gh issue list --state open --label ready-for-agent` devolvendo
+ * `[]`, duas rodadas seguidas no Terraços saíram com `STATUS: ready` apontando
+ * ticket de fora do frontier. Na de `ornith:9b` foi a `#12`, sem rótulo nenhum,
+ * "por reconciliação"; na de `qwen3-coder:30b`, a `#21`, que é
+ * `ready-for-human`. O prompt definia o frontier e oferecia `complete` e
+ * `blocked` logo abaixo, mas nenhuma linha dizia que ticket de fora está fora.
+ */
+test("orientation.md: o frontier é fechado, e frontier vazio sai como complete ou blocked", () => {
+  const paragraphs = readOrientationTemplate().split(/\n\s*\n/);
+  const rule = paragraphs.find((p) => /frontier is closed/i.test(p));
+  assert.ok(rule, "nenhum parágrafo diz que o frontier é fechado");
+  // As duas justificativas que as rodadas inventaram, nomeadas.
+  assert.match(rule, /reconcil/i);
+  assert.match(rule, /decompos/i);
+  // Frontier vazio é resposta: os dois estados e o `TICKET` vazio.
+  assert.match(rule, /`complete`/);
+  assert.match(rule, /`blocked`/);
+  assert.match(rule, /empty\s+`TICKET`/);
+});
+
+/**
+ * Issue #81, o outro lado: o `CLAIM:` da rodada de `qwen3-coder:30b` foi
+ * `gh issue edit 21 --add-label "ready-for-agent"`, o comando que aplica o
+ * rótulo que faltava. O "Never invent one" não alcançava isso — o comando é
+ * plausível, e é o próprio frontier que ele fabrica.
+ */
+test("orientation.md: o CLAIM nunca é o comando que aplica rótulo de triagem", () => {
+  const orientation = readOrientationTemplate();
+  const claim = orientation.match(/^CLAIM:[\s\S]*?(?=^WHY:)/m);
+  assert.ok(claim, "o bloco de contrato não descreve o campo CLAIM");
+  assert.match(claim[0], /triage label/i);
+});
+
+/**
+ * Issue #78, a rodada de prova de 02/09/2026 no Terraços: a fronteira vazia
+ * saiu certa (`complete`, `TICKET` vazio) e o `CONTEXT` ressuscitou a #19,
+ * fechada uma hora e dezenove antes. O `CONTEXT` de um resumo que para não
+ * tem quem o leia — a iteração morre no `STATUS` antes de chegar nele —, e a
+ * regra em prosa duas seções acima não segurou o `ornith:9b` por dois turnos
+ * seguidos. Campo sem leitor sai do contrato, e `checkOrientationSummary`
+ * cobra o que o contrato pede.
+ */
+test("orientation.md: o CONTEXT é vazio quando o STATUS não é ready", () => {
+  const orientation = readOrientationTemplate();
+  const context = orientation.match(/^CONTEXT:[\s\S]*?(?=^```)/m);
+  assert.ok(context, "o bloco de contrato não descreve o campo CONTEXT");
+  assert.match(context[0], /empty when\s*\n?STATUS isn't ready/i);
+  // A explicação não some, ela muda de campo.
+  assert.match(context[0], /WHY/);
 });

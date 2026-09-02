@@ -6,10 +6,11 @@ import {
   ensureSandbox,
   execCapture,
   runClaudeStreaming,
+  killClaudeInSandbox,
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatStuckLoop, formatInvalidSummary, formatStraySummary, orientationHalts } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -22,7 +23,7 @@ import {
   readTargetMcpConfig,
   resolveEmbeddingEnv,
 } from "./knowledge-index.mjs";
-import { buildOrientationPrompt, buildOrientationAgent } from "./orientation.mjs";
+import { buildOrientationPrompt, buildOrientationAgent, delegatesOrientation } from "./orientation.mjs";
 import { ensurePromptFresh, describeDrift } from "./prompts.mjs";
 import {
   resolve as resolveProvider,
@@ -40,13 +41,38 @@ function feedbackLoopsBlock(cfg) {
     : "1. Discover this repo's checks (package.json scripts, Makefile, CI config) and run every one that applies.";
 }
 
-/** Pura: template do prompt de iteração entra, prompt resolvido sai. Sem fs, sem Docker. */
+/**
+ * Pura: template do prompt de iteração entra, prompt resolvido sai. Sem fs, sem Docker.
+ *
+ * `{{SIGNATURE}}` fica de fora de propósito: ele nomeia o log daquela iteração,
+ * e o prompt é montado uma vez para o loop inteiro. Quem o resolve é
+ * `runIteration`, com `renderSignature`.
+ */
 export function renderPrompt(template, cfg) {
   return template
     .replaceAll("{{PROGRESS_FILE}}", cfg.progressFile)
     .replaceAll("{{COMPLETION_PROMISE}}", cfg.completionPromise)
     .replaceAll("{{BLOCKED_PROMISE}}", cfg.blockedPromise)
     .replaceAll("{{FEEDBACK_LOOPS}}", feedbackLoopsBlock(cfg));
+}
+
+/**
+ * A linha de procedência que a iteração copia no fechamento do ticket e no
+ * commit. Pura: caminho do log e Provedor entram, a linha sai.
+ *
+ * Ela existe porque reconstruir isso depois custa caro: em 01/09/2026, saber
+ * qual das dezenove rodadas no alvo Terraços tinha entregue cada um dos treze
+ * tickets exigiu cruzar `gh issue list` com o `gh issue close` de dentro de
+ * cada log, por horário — e seis tickets ficaram sem resposta. O modelo entra
+ * junto do log porque é ele que separa a rodada paga da rodada `--night`, e o
+ * que se revisa depois de uma noite de modelo pequeno não é o mesmo que se
+ * revisa depois de uma rodada com o modelo grande.
+ *
+ * O caminho vem relativo à raiz do alvo: é assim que ele serve para quem lê a
+ * issue no navegador e vai procurar o arquivo no repositório.
+ */
+export function renderSignature({ logPath, model, night = false }) {
+  return `Ralph · modelo \`${model}\`${night ? " (--night)" : ""} · log \`${logPath}\``;
 }
 
 /**
@@ -230,6 +256,57 @@ function warnIfOrientationCeilingExceeded(state) {
 }
 
 /**
+ * O teto acima cobra a Orientação que rodou demais; este cobra a que não
+ * rodou onde devia (issue #66). Amarelo pelo mesmo motivo: a iteração
+ * entregou o ticket, só pagou o contexto que o ADR-0004 queria poupar.
+ *
+ * Dois cortes antes de acusar. O prompt que nunca prometeu delegação
+ * (`entropy.md`, `test-coverage.md`) não deve nenhuma, e o Teto da iteração
+ * não prova nada — o resumo de orientação pode estar justamente no turno que
+ * a morte comeu, e chamar isso de "rodou no contexto principal" seria
+ * inventar. É o oposto do que a issue #44 decidiu para o teto de invocações,
+ * e de propósito: lá o sinal é uma chamada que existe, aqui é uma que falta.
+ */
+function warnIfOrientationMissed(state, cfg, prompt, timedOut) {
+  if (timedOut || !delegatesOrientation(prompt)) return;
+  const warning = formatOrientationMissWarning(state.orientationSummaries, state.orientationDelegatedTo);
+  if (!warning) return;
+  process.stdout.write(
+    paint(C.yellow, `\n  ${warning}\n`) +
+      paint(C.dim, `    o passo 1 de ${cfg.promptFile} é quem pede a delegação; o log da iteração mostra a chamada que saiu.\n`)
+  );
+}
+
+/**
+ * `warnIfSkillMissing` pega a skill que nunca carregou na sessão; esta pega a
+ * que carregou e foi recusada na hora da chamada (issue #72) — o agente segue
+ * em frente e o commit sai sem a revisão que o passo pedia. Amarelo pelo mesmo
+ * motivo do teto: o passo perdido não invalida o resto da iteração, e derrubar
+ * um `ralph afk` por isso custa mais do que o aviso na manhã seguinte.
+ */
+function warnIfSkillCallFailed(state, cfg) {
+  const warning = formatSkillFailureWarning(state.failedSkills);
+  if (!warning) return;
+  process.stdout.write(
+    paint(C.yellow, `\n  ${warning}\n`) +
+      paint(C.dim, `    veja como ${cfg.promptFile} pede a skill, e o log da iteração para o erro exato.\n`)
+  );
+}
+
+/**
+ * Amarelo, como os outros desta seção: o corte já aconteceu pelo `STATUS`, e
+ * quem lê o log de manhã merece saber que o resumo se contradizia (issue
+ * #82).
+ */
+function warnIfStraySummary(state) {
+  const warning = formatStraySummary(state.straySummary);
+  if (!warning) return;
+  // Um aviso por desvio, e a indentação é daqui: o formatador devolve as
+  // linhas cruas, como os irmãos desta seção.
+  process.stdout.write(paint(C.yellow, `\n  ${warning.split("\n").join("\n  ")}\n`));
+}
+
+/**
  * Aquecer o Provedor local antes da iteração 1 não é falha alta (issue #34,
  * diferente das três provas de `probeProviderBoth`) — a primeira iteração
  * carrega o modelo sozinha, só mais devagar, então isto só avisa.
@@ -240,6 +317,142 @@ function warnIfPreloadFailed(warmed) {
     paint(C.yellow, `\n  ! não consegui aquecer o Provedor local antes da iteração 1.\n`) +
       paint(C.dim, `    a primeira iteração carrega o modelo sozinha, só mais devagar.\n`)
   );
+}
+
+/**
+ * Pura: o que o operador lê quando o teto da issue #67 estourou. É a única
+ * falha de iteração sem linha de erro no log — o processo morreu no meio de
+ * uma frase, sem `result` e sem stderr útil — então a mensagem carrega
+ * sozinha o log até onde chegou e o campo que afrouxa o teto.
+ */
+export function describeIterationTimeout({ iteration, seconds, logPath }) {
+  return (
+    `iteração ${iteration} estourou o teto de ${seconds}s e o claude foi morto.\n` +
+    `  Log até onde chegou: ${logPath}\n` +
+    `  Se a máquina é lenta e a espera era legítima, suba iterationTimeoutSeconds ` +
+    `em .ralph/config.json; se não, o fim do log mostra onde a iteração travou.`
+  );
+}
+
+/**
+ * Puro: o que o operador lê quando a iteração travou em laço (issue #74).
+ * Aponta o campo que muda o desfecho, e ele depende de quem travou: nas quatro
+ * iterações da #74 a Orientação tinha herdado o modelo de 9B do Provedor
+ * local, e nenhuma das 15 anteriores em Sonnet repetiu uma chamada sequer; no
+ * laço do processo principal de 01/09/2026 (issue #76) quem estava pequeno
+ * demais era o modelo da iteração inteira, e `orientationModel` não o alcança.
+ */
+export function describeStuckLoop({ iteration, loop, logPath }) {
+  const fix = loop.phase === "main"
+    ? `  Se o Provedor é pequeno demais para o trabalho da iteração, aponte ` +
+      `model (ou nightProvider.model) para um modelo maior.`
+    : `  Se o Provedor da Orientação é pequeno demais para o passo 1, aponte ` +
+      `orientationModel (ou nightProvider.orientationModel) para um modelo maior.`;
+  return (
+    `iteração ${iteration} travou em laço: ${formatStuckLoop(loop)}.\n` +
+    `  Log até o corte: ${logPath}\n` +
+    fix
+  );
+}
+
+/**
+ * Puro: o que o operador lê quando o resumo de orientação decidiu a iteração
+ * sozinho (issue #79). Não é falha — é o desfecho que o passo 2 de
+ * `prompts/implement.md` já pedia —, então a linha diz o que *não* aconteceu:
+ * nada foi tocado no repositório alvo.
+ */
+export function describeOrientationHalt(status) {
+  const what = status === "complete" ? "o backlog concluído" : "a frente bloqueada";
+  return `a Orientação reportou ${what} (STATUS: ${status}) — iteração cortada antes de tocar no repositório alvo.`;
+}
+
+/**
+ * Puro: o que o operador lê quando o resumo de orientação foi recusado (issue
+ * #82). Espelha `describeStuckLoop`, e não `describeOrientationHalt`, porque é
+ * defeito e não desfecho: o resumo veio, e veio errado.
+ *
+ * O conserto é sempre `orientationModel`, sem o par da fase que o laço tem —
+ * quem compôs o `CLAIM` e escolheu o ticket foi o Provedor da Orientação, e
+ * trocar o modelo da iteração inteira não muda uma linha do relatório.
+ */
+export function describeInvalidSummary({ iteration, invalid, logPath }) {
+  return (
+    `iteração ${iteration} cortada por resumo inválido: ${formatInvalidSummary(invalid)}.\n` +
+    `  Log até o corte: ${logPath}\n` +
+    `  Se o Provedor da Orientação não cumpre o contrato de prompts/orientation.md, ` +
+    `aponte orientationModel (ou nightProvider.orientationModel) para um modelo maior.`
+  );
+}
+
+/**
+ * Puro: estado do stream e config entram, o desfecho da iteração sai. É a
+ * costura da issue #79: o resumo de orientação vale por si, sem esperar a
+ * promise que o modelo pequeno pode não escrever. `haltStatus` é o que faz
+ * `runIteration` matar o processo no meio.
+ *
+ * O `complete` sai como backlog concluído, e não como bloqueio, apesar da
+ * assimetria da #70 — quem a lê vai propor o contrário, e é este parágrafo que
+ * responde. Lá o sinal era a promise recitada no raciocínio, que o passo 2
+ * lista inteira e o modelo repete sem querer dizê-la; aqui é o `STATUS` de um
+ * resumo bem formado, o mesmo dado que o passo 2 manda a iteração obedecer sem
+ * julgar. Mapear `complete` para bloqueio não protegeria de Orientação errada:
+ * hoje ela já fecha a noite em verde, só que passando pela mão do modelo. O
+ * que mudaria é o backlog de fato vazio não conseguir mais dizer que acabou.
+ *
+ * O caminho `ready` não muda: ali o desfecho continua vindo só da promise.
+ *
+ * O resumo recusado (issue #82) não decide desfecho nenhum, e é o único jeito
+ * de as duas leituras do mesmo relatório não se contradizerem: o `STATUS` veio
+ * no mesmo texto que o `CLAIM` proibido, e obedecer a metade dele fecharia a
+ * noite em verde por conta de um resumo que o Ralph acabou de chamar de
+ * inválido. Sem `haltStatus`, a iteração cai no corte por resumo inválido, que
+ * anuncia o defeito e deixa a próxima escolher outro ticket.
+ */
+export function iterationOutcome(state, cfg) {
+  const haltStatus =
+    !state.invalidSummary && orientationHalts(state.orientationStatus) ? state.orientationStatus : null;
+  return {
+    haltStatus,
+    complete: haltStatus === "complete" || foundPromise(state, cfg.completionPromise),
+    // Só o bloqueio vale pensado (issue #70): o modelo pequeno anuncia a
+    // promise no raciocínio e entrega texto sem a tag, e o desfecho de errar
+    // para mais é chamar um humano que a promise ia chamar de qualquer jeito.
+    blocked: haltStatus === "blocked" || foundPromise(state, cfg.blockedPromise, { includeThinking: true }),
+  };
+}
+
+/**
+ * Anuncia o corte. Vermelho como o teto de tempo: a iteração morreu sem
+ * entregar. O loop, esse, segue — ver `runLoop`.
+ */
+export function reportStuckLoop(root, cfg, result, iteration) {
+  const logPath = path.relative(root, result.logPath);
+  process.stdout.write(
+    paint(C.red, `\n✗ ${describeStuckLoop({ iteration, loop: result.state.stuckLoop, logPath })}\n`)
+  );
+}
+
+/**
+ * O mesmo anúncio para o Corte por resumo inválido (issue #82). Sem o `cfg`
+ * dos irmãos: o conserto que a linha sugere é sempre o mesmo campo, e não
+ * depende de nada que o config diga.
+ */
+export function reportInvalidSummary(root, result, iteration) {
+  const logPath = path.relative(root, result.logPath);
+  process.stdout.write(
+    paint(C.red, `\n✗ ${describeInvalidSummary({ iteration, invalid: result.invalidSummary, logPath })}\n`)
+  );
+}
+
+/**
+ * Escreve o estouro na tela. Mora aqui, e não em cada chamador, porque o `afk`
+ * e o `once` anunciam a mesma coisa — e o `once` só passou a ter o que anunciar
+ * quando o teto passou a existir.
+ */
+export function reportIterationTimeout(root, cfg, result, iteration) {
+  const logPath = path.relative(root, result.logPath);
+  const seconds = cfg.iterationTimeoutSeconds;
+  process.stdout.write(paint(C.red, `\n✗ ${describeIterationTimeout({ iteration, seconds, logPath })}\n`));
 }
 
 function logFile(root, iteration) {
@@ -259,6 +472,17 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   const renderer = createStreamRenderer({
     onEvent: (evt) => appendFileSync(jsonl, JSON.stringify(evt) + "\n", "utf8"),
   });
+
+  // A assinatura só existe aqui: o nome do log é desta iteração, e o prompt do
+  // loop foi montado antes de qualquer uma delas existir.
+  const signed = prompt.replaceAll(
+    "{{SIGNATURE}}",
+    renderSignature({
+      logPath: path.relative(root, jsonl).replace(/\\/g, "/"),
+      model: provider.model,
+      night: provider.kind === "local",
+    })
+  );
 
   const header = `iteração ${iteration}/${total}${provider.kind === "local" ? ` · Provedor local (${provider.model})` : ""}`;
   process.stdout.write(
@@ -295,32 +519,73 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   // dele"). Sem `--night`, `provider.orientationModel` é `cfg.orientationModel`
   // sem mudança nenhuma.
   const agents = buildOrientationAgent(buildOrientationPrompt(root, cfg), { ...cfg, orientationModel: provider.orientationModel }, tools);
-  const { code, stderr } = await runClaudeStreaming(cfg.sandboxName, {
+  const { code, stderr, timedOut, aborted } = await runClaudeStreaming(cfg.sandboxName, {
     workdir,
-    prompt,
+    prompt: signed,
     model: provider.model,
     env: renderProviderEnv(provider),
+    // O log é escrito evento a evento com `appendFileSync`, então matar o
+    // processo aqui deixa em disco tudo que chegou até o corte.
+    timeoutMs: cfg.iterationTimeoutSeconds * 1000,
+    // O teto de tempo sozinho não alcança o laço (issue #74): em 28/08/2026 as
+    // quatro iterações travadas foram mortas à mão entre 1,5 e 9,5 minutos, e
+    // sem o Ctrl+C teriam ficado a hora inteira do teto. Aqui o corte sai em
+    // segundos, assim que a Orientação repete a mesma chamada dez vezes — ou o
+    // processo principal repete a mesma vinte (issue #76).
+    // O laço (issues #74/#76), o resumo de orientação que já decidiu a
+    // iteração (issue #79) e o resumo que veio inválido (issue #82) cortam
+    // pela mesma porta: o que vem depois deles só gasta contexto, e nos dois
+    // últimos gasta escrita no repositório alvo — a #82 mediu a iteração
+    // aplicando um rótulo de triagem numa issue fechada.
+    abortWhen: () =>
+      renderer.state.stuckLoop !== null ||
+      renderer.state.invalidSummary !== null ||
+      orientationHalts(renderer.state.orientationStatus),
     extraArgs: [...extraArgs, ...mcpArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
   const state = renderer.end();
 
+  // Matar o cliente do lado do host não alcança o processo do container: sem
+  // esta linha o `claude` sobrevive ao teto e segue mexendo no repo montado.
+  if (timedOut || aborted) await killClaudeInSandbox(cfg.sandboxName);
+
   warnIfSkillMissing(state, cfg);
   warnIfIndexMcpFailed(state, detected);
   warnIfOrientationCeilingExceeded(state);
+  warnIfOrientationMissed(state, cfg, prompt, timedOut || aborted);
+  warnIfSkillCallFailed(state, cfg);
+  warnIfStraySummary(state);
   await warnIfAuthFailed(state, cfg);
 
-  if (code !== 0 && !state.finalResult) {
+  // No estouro do teto, `code` é o do processo que nós matamos e o stderr é
+  // o do corte — quem diz o que aconteceu é `describeIterationTimeout`.
+  if (code !== 0 && !state.finalResult && !timedOut && !aborted) {
     process.stderr.write(paint(C.red, `\n  claude saiu com código ${code}\n`));
     if (stderr.trim()) process.stderr.write(paint(C.dim, stderr.trim().split("\n").slice(-8).join("\n") + "\n"));
   }
 
+  // Ao lado dos avisos acima, e não em quem chamou: a linha pertence ao
+  // cabeçalho desta iteração, e `once` e `afk` a anunciariam igual.
+  const outcome = iterationOutcome(state, cfg);
+  if (outcome.haltStatus) {
+    process.stdout.write(paint(C.yellow, "\n  ✂ " + describeOrientationHalt(outcome.haltStatus) + "\n"));
+  }
+
   return {
     code,
+    timedOut,
+    // O corte por orientação também aborta o processo, e ele não é laço —
+    // quem responde por `looped` é o que o stream mediu, não o abort.
+    looped: aborted && state.stuckLoop !== null,
+    // O laço vem antes quando os dois acontecem: ele é o defeito mais grosso,
+    // e reportar os dois faria o operador procurar duas causas para um corte.
+    invalidSummary: aborted && state.stuckLoop === null ? state.invalidSummary : null,
     state,
     logPath: jsonl,
-    complete: foundPromise(state, cfg.completionPromise),
-    blocked: foundPromise(state, cfg.blockedPromise),
+    haltStatus: outcome.haltStatus,
+    complete: outcome.complete,
+    blocked: outcome.blocked,
   };
 }
 
@@ -394,11 +659,14 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
     `\n${paint(C.bold, "Ralph")} ${paint(C.dim, `· ${path.basename(root)} · branch ${branch ?? "—"} · modelo ${provider.model}${providerSuffix} · até ${iterations} iterações`)}\n`
   );
 
-  // Provedor local não reporta `total_cost_usd` — "sem custo" e "custo não
-  // reportado" significam coisas opostas para quem lê o resumo depois
-  // (ADR-0008), então o fallback muda com o Provedor, não só o texto do
-  // cabeçalho.
-  const costFallback = provider.kind === "local" ? `sem custo — Provedor local (${provider.model})` : "custo não reportado";
+  // "Sem custo" e "custo não reportado" significam coisas opostas para quem lê
+  // o resumo depois (ADR-0008), então o texto muda com o Provedor, não só o do
+  // cabeçalho. Quem sabe que o Provedor não cobra é quem o escolheu: o total
+  // reportado é ficção e nem chega a ser comparado (issue #68).
+  const costing =
+    provider.kind === "local"
+      ? { billed: false, fallback: `sem custo — Provedor local (${provider.model})` }
+      : { billed: true, fallback: "custo não reportado" };
 
   const started = Date.now();
   let cost = 0;
@@ -412,36 +680,53 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
 
     if (result.complete) {
       process.stdout.write(paint(C.green, `\n✓ backlog concluído na iteração ${i}.\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "complete", costFallback);
+      return summary(i, cost, modelTotals, subagentTokens, started, "complete", costing);
     }
     if (result.blocked) {
       process.stdout.write(paint(C.yellow, `\n■ Ralph travou na iteração ${i} e pediu um humano.\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "blocked", costFallback);
+      return summary(i, cost, modelTotals, subagentTokens, started, "blocked", costing);
     }
-    if (result.code !== 0) {
-      process.stdout.write(paint(C.red, `\n✗ iteração ${i} falhou. Log: ${path.relative(root, result.logPath)}\n`));
-      return summary(i, cost, modelTotals, subagentTokens, started, "error", costFallback);
+    // Laço é a primeira exceção à regra do #67: a iteração morre, o loop
+    // segue. Um Provedor que trava numa iteração não travou na máquina — em
+    // 28/08/2026 as travadas e as boas se alternaram no mesmo `ornith:9b`,
+    // quatro entregas entre quatro laços, e a próxima iteração escolhe outro
+    // ticket. O que o corte já comprou é o laço custar segundos, não uma hora.
+    //
+    // O resumo inválido é a segunda (issue #82), pela mesma medida: o
+    // `ornith:9b` que compôs o `CLAIM` proibido em 01/09 devolveu um `blocked`
+    // correto em 33 segundos no dia seguinte, contra o mesmo alvo. Relatório
+    // ruim custa segundos, e a próxima iteração nasce com contexto limpo.
+    if (result.looped) {
+      reportStuckLoop(root, cfg, result, i);
+    } else if (result.invalidSummary) {
+      reportInvalidSummary(root, result, i);
+    } else if (result.code !== 0) {
+      // Estouro do teto para o loop pelo mesmo caminho de qualquer iteração
+      // falha (issue #67): a máquina acabou de dar sinal de travamento, e
+      // largar a próxima iteração nela é como o AFK queima uma noite inteira.
+      if (result.timedOut) reportIterationTimeout(root, cfg, result, i);
+      else process.stdout.write(paint(C.red, `\n✗ iteração ${i} falhou. Log: ${path.relative(root, result.logPath)}\n`));
+      return summary(i, cost, modelTotals, subagentTokens, started, "error", costing);
     }
     if (cfg.cooldownSeconds > 0 && i < iterations) {
       await new Promise((r) => setTimeout(r, cfg.cooldownSeconds * 1000));
     }
   }
   process.stdout.write(paint(C.yellow, `\n⏱ teto de ${iterations} iterações atingido sem a promise.\n`));
-  return summary(iterations, cost, modelTotals, subagentTokens, started, "max-iterations", costFallback);
+  return summary(iterations, cost, modelTotals, subagentTokens, started, "max-iterations", costing);
 }
 
 /**
  * `subagentTokens` só aparece na linha quando > 0 — repositório sem
  * subagente nenhum (a maioria dos logs, hoje) mantém o relatório idêntico
- * ao de antes da issue #9. `costFallback` (issue #31) é "custo não
- * reportado" por padrão — o texto de sempre para quem não passa `--night`.
+ * ao de antes da issue #9. `costing` (issues #31 e #68) diz se o Provedor
+ * cobra e com que texto o resumo sai quando não há custo.
  */
-function summary(iterations, cost, modelTotals, subagentTokens, started, status, costFallback = "custo não reportado") {
+function summary(iterations, cost, modelTotals, subagentTokens, started, status, costing) {
   const mins = ((Date.now() - started) / 60000).toFixed(1);
   const subagent = subagentTokens ? ` · subagentes ${subagentTokens} tokens` : "";
-  process.stdout.write(
-    paint(C.dim, `  ${iterations} iterações · ${mins} min · ${formatCostByModel(cost, modelTotals, costFallback)}${subagent}\n`)
-  );
+  const costLine = formatCostByModel(cost, modelTotals, costing);
+  process.stdout.write(paint(C.dim, `  ${iterations} iterações · ${mins} min · ${costLine}${subagent}\n`));
   return { status, iterations, cost };
 }
 

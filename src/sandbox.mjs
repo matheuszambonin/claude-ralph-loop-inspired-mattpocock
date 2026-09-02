@@ -107,6 +107,96 @@ export function mountsFor(root, cfg) {
 }
 
 /**
+ * Sistema de arquivos que um disco local reporta na única plataforma onde esta
+ * sonda roda. Tudo que difere disso num workspace do sandbox vira aviso.
+ */
+const LOCAL_DISK_FILESYSTEM = "NTFS";
+
+/** Campo de texto vindo de fora: string aparada, ou "" para qualquer outra coisa. */
+function text(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Letra do volume do host, aceitando as três formas que circulam por aqui: o
+ * caminho de um workspace (`G:\\repo`), o `DeviceID` do Windows (`G:`) e a
+ * própria letra (`G`). "" quando não há nenhuma — o caso de Linux, macOS e o
+ * de um caminho UNC.
+ */
+function volumeLetterOf(value) {
+  const m = /^([A-Za-z])(?::|$)/.exec(text(value));
+  return m ? m[1].toUpperCase() : "";
+}
+
+/**
+ * Volumes do host onde os workspaces do sandbox vivem (issue #27). Ponto
+ * impuro fino e Windows-only de propósito: é onde a falha de virtiofs foi
+ * observada e onde existe letra de volume. Em qualquer outra plataforma
+ * devolve nada e o doctor fica em silêncio — um ramo para Linux e macOS seria
+ * calibrado no escuro, e `describeSandboxCreateFailure` já traduz o erro real
+ * lá quando o caso aparecer.
+ *
+ * Nunca lança: PowerShell ausente, timeout, política de execução ou JSON
+ * inválido são ausência de fatos, não exceção. Esta é uma checagem de
+ * diagnóstico — derrubar o `doctor` por causa dela seria pior do que calar.
+ *
+ * O que entrega o volume é o sistema de arquivos, não o tipo de drive: o
+ * Google Drive File Stream se apresenta como disco fixo (`DriveType 3`) e
+ * reporta `FAT32`.
+ */
+export async function collectHostVolumes({ platform = process.platform, execImpl = execFileAsync } = {}) {
+  if (platform !== "win32") return [];
+  try {
+    const { stdout } = await execImpl(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Get-CimInstance -ClassName Win32_LogicalDisk | Select-Object DeviceID,FileSystem,VolumeName | ConvertTo-Json -Compress",
+      ],
+      { encoding: "utf8", timeout: 10_000, windowsHide: true },
+    );
+    const parsed = JSON.parse(stdout);
+    return (Array.isArray(parsed) ? parsed : [parsed])
+      .filter((row) => row && typeof row === "object")
+      .map((row) => ({ letter: volumeLetterOf(row.DeviceID), fileSystem: text(row.FileSystem), label: text(row.VolumeName) }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Uma linha de aviso por volume do host que abriga workspace do sandbox e não
+ * reporta sistema de arquivos de disco local (issue #27). Pura: recebe a mesma
+ * lista de mounts que o `create` usa e os fatos colhidos, devolve texto — o
+ * teste não depende de qual disco a máquina que roda os testes tem.
+ *
+ * A linha relata o fato colhido e o que se sabe sobre ele; não prevê o
+ * futuro. Sai como aviso e nunca como falha porque um volume exótico pode
+ * muito bem funcionar, e quem lê julga se o caso é o dele.
+ *
+ * Volume sem sistema de arquivos reportado não vira aviso: "não reportou" não
+ * é o mesmo que "não é NTFS", e avisar sobre ausência de dado seria o aviso
+ * falso que esta checagem existe para não dar.
+ */
+export function describeWorkspacesOutsideLocalDisk(mounts, volumes) {
+  const letters = new Set((mounts ?? []).map(volumeLetterOf).filter(Boolean));
+  return (volumes ?? [])
+    .filter((v) => v && typeof v === "object")
+    .map((v) => ({ letter: volumeLetterOf(v.letter), fileSystem: text(v.fileSystem), label: text(v.label) }))
+    .filter((v) => letters.has(v.letter) && v.fileSystem && v.fileSystem.toUpperCase() !== LOCAL_DISK_FILESYSTEM)
+    .map(
+      (v) =>
+        `workspace do sandbox no volume ${v.letter}: — sistema de arquivos ${v.fileSystem}, ` +
+        `rótulo ${v.label ? `"${v.label}"` : "sem rótulo"}; disco local no Windows reporta ${LOCAL_DISK_FILESYSTEM}.\n` +
+        "  O compartilhamento de arquivos do docker sandbox é virtiofs. O caso já observado terminando em\n" +
+        "  EINVAL foi um volume que reporta FAT32 e disco fixo, que é como o Google Drive File Stream se\n" +
+        "  apresenta (issue #24). Se for esse o caso deste volume, um clone em disco local é a saída."
+    );
+}
+
+/**
  * Assinatura estável de "o compartilhamento de arquivos do docker sandbox não
  * conseguiu ser construído" (issue #24/#26): tipo de recurso + errno. A frase
  * de panic inteira em volta (`panic detected in openvmm: failed to resolve
@@ -250,8 +340,17 @@ export function runAgentInteractive(name, agentArgs = []) {
  * para este processo `claude`, nunca vaza para outro comando do sandbox.
  * Ausente ou vazio (o caso de hoje, Provedor `anthropic`): nenhum prefixo
  * entra nos args, e a invocação sai idêntica à de antes desta issue.
+ *
+ * `timeoutMs` (issue #67) é o teto da iteração: estourado, o processo do
+ * `docker sandbox exec` morre e a promise resolve com `timedOut: true`. Quem
+ * chama decide o que fazer com isso — aqui não há política, só o relógio.
+ * Zero ou ausente mantém o comportamento de antes: espera indefinida.
+ *
+ * `spawnImpl` existe pelo mesmo motivo do `dockerImpl` de
+ * `allowHostLoopback`: é por onde o teste do teto prova que o processo
+ * morre, sem precisar de um Docker de verdade para travar de propósito.
  */
-export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [], env = {}, onChunk }) {
+export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [], env = {}, timeoutMs = 0, onChunk, abortWhen, spawnImpl = spawn }) {
   const claudeArgs = [
     "claude",
     "--print",
@@ -266,18 +365,82 @@ export function runClaudeStreaming(name, { workdir, prompt, model, extraArgs = [
   const args = ["sandbox", "exec", "-w", workdir, name, ...(envArgs.length ? ["env", ...envArgs] : []), ...claudeArgs];
 
   return new Promise((resolve, reject) => {
-    const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnImpl("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
+    let timedOut = false;
+    let aborted = false;
+    let timer = null;
+    let settled = false;
+
+    /**
+     * Resolve uma vez só e larga o filho. Medido em 28/08/2026 contra o
+     * sandbox `ralph-ralph-1pp906k`: matar o cliente do `docker sandbox exec`
+     * **não** produz `close` — ele deixa processos para trás segurando os
+     * pipes, e o Node só emite `close` quando o stdio fecha. Uma promise que
+     * esperasse esse evento trocaria a espera infinita por outra.
+     */
+    const settle = (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.unref?.();
+      resolve({ code, stderr, timedOut, aborted });
+    };
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        child.kill();
+        settle(1);
+      }, timeoutMs);
+    }
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => onChunk(chunk));
+    child.stdout.on("data", (chunk) => {
+      onChunk(chunk);
+      // Depois do chunk, nunca antes: quem decide o corte lê o estado que este
+      // mesmo chunk acabou de alimentar (issue #74). Mata pelo caminho do teto
+      // de tempo — o `claude` do container ainda precisa do `killClaudeInSandbox`
+      // de quem chamou, e é por isso que o resultado diz qual dos dois cortou.
+      if (settled || !abortWhen?.()) return;
+      aborted = true;
+      child.kill();
+      settle(1);
+    });
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
       if (stderr.length > 64 * 1024) stderr = stderr.slice(-32 * 1024);
     });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? 1, stderr }));
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => settle(code ?? 1));
   });
+}
+
+/**
+ * Mata o `claude` de dentro do sandbox. Matar o cliente `docker sandbox exec`
+ * do lado do host não basta: o processo do container não recebe o sinal e
+ * segue trabalhando no repo montado — gastando token e ainda podendo commitar
+ * depois que o Ralph já desistiu da iteração (issue #67). O padrão de
+ * argumentos é o da invocação de `runClaudeStreaming`, não `claude` solto, para
+ * não derrubar uma sessão interativa que o operador tenha aberto no mesmo
+ * sandbox. Sem correspondência o `pkill` sai 1, e isso aqui é o caso normal —
+ * o cliente morto pode ter levado o processo junto.
+ */
+export async function killClaudeInSandbox(name) {
+  // Com teto próprio: este `exec` é o mesmo tipo de processo que acabou de não
+  // responder, e um Ralph pendurado na limpeza fica pior do que sem teto
+  // nenhum. Trinta segundos é folgado para um `pkill`.
+  await Promise.race([
+    execCapture(name, ["pkill", "-f", "claude --print"]),
+    new Promise((r) => setTimeout(r, 30_000).unref()),
+  ]);
 }
 
 /** Caminho, dentro do container, de um caminho do host. */
@@ -286,4 +449,61 @@ export const inContainer = toContainerPath;
 /** Caminho do bootstrap dentro do container (o Ralph é montado read-only). */
 export function bootstrapScriptPath() {
   return toContainerPath(path.join(ralphHome(), "sandbox", "bootstrap.sh"));
+}
+
+/**
+ * Primeira versão do `gh` que lê uma issue sem pedir `repository.issue.
+ * projectCards`, o campo que o GitHub aposentou junto com os Projects
+ * (classic). Abaixo dela `gh issue view <n> --comments` sai 1 com erro de
+ * GraphQL — e é esse o comando que `docs/agents/issue-tracker.md` prescreve
+ * para ler um ticket (issue #80). Apurado em cli/cli: o commit 5ec2160b
+ * ("Avoid requesting projectCards for issue view") está em v2.71.0 e não em
+ * v2.70.0.
+ */
+export const GH_MIN_VERSION = "2.71.0";
+
+/** [major, minor, patch] do primeiro `x.y.z` do texto; [] quando não há nenhum. */
+function versionTuple(value) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(typeof value === "string" ? value : "");
+  return m ? m.slice(1, 4).map(Number) : [];
+}
+
+/** Negativo, zero ou positivo, comparando número a número — "2.100" > "2.9". */
+function compareVersions(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+/**
+ * O que o `doctor` diz sobre o `gh` que existe dentro do sandbox, a partir da
+ * saída de `gh --version`. Pura: recebe texto, devolve `{ level, message }` —
+ * mesma forma de `describeDrift`.
+ *
+ * É aqui, e não no `bootstrap.sh`, que o piso é cobrado: a instalação lá não
+ * derruba o sandbox quando falha, então alguém precisa dizer depois se ela
+ * pegou. Vale também para os sandboxes criados antes desta issue — o bootstrap
+ * é carimbado, roda uma vez por sandbox, e nada no loop troca o `gh` sozinho.
+ * Sem esta linha o operador só descobre a versão velha pelo estrago: uma
+ * Orientação que não conseguiu ler o ticket e escreveu mesmo assim.
+ *
+ * Sem versão legível não sai linha nenhuma: `gh` ausente ou quebrado é o que a
+ * checagem de `gh auth status`, ao lado desta no `doctor`, já reprova — um
+ * segundo diagnóstico para o mesmo fato só duplicaria o barulho.
+ */
+export function describeSandboxGh(versionOutput) {
+  const seen = versionTuple(versionOutput);
+  if (!seen.length) return null;
+  const version = seen.join(".");
+  if (compareVersions(seen, versionTuple(GH_MIN_VERSION)) >= 0) {
+    return { level: "ok", message: `gh ${version} no sandbox` };
+  }
+  return {
+    level: "warn",
+    message:
+      `gh ${version} no sandbox, abaixo de ${GH_MIN_VERSION} — nessa faixa 'gh issue view <n> --comments'\n` +
+      "  reprova pedindo projectCards, campo que o GitHub aposentou, e a leitura de ticket morre lá dentro.\n" +
+      "  Rode 'ralph bootstrap --force' para instalar o gh do repositório oficial.",
+  };
 }

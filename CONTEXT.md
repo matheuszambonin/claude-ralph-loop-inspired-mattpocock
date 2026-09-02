@@ -23,7 +23,17 @@ container — o repositório alvo, os plugins do host, a raiz de instalação do
 Ralph, os mounts extras. Não é o **repositório alvo**: este é só um dos
 workspaces montados. Onde a mensagem ou o teste falam do diretório montado em
 si, não do que ele contém, o termo é este.
-_Avoid_: volume, bind mount, ponto de montagem
+_Avoid_: volume (a unidade de disco do host é **volume do host**), bind mount,
+ponto de montagem
+
+**Volume do host**:
+A unidade de disco do Windows onde um ou mais **workspaces do sandbox** vivem,
+identificada pela letra (`C:`, `G:`) e pelo sistema de arquivos que reporta.
+Não é o workspace: vários workspaces cabem no mesmo volume, e é o volume — não
+o diretório — que decide se o compartilhamento de arquivos do `docker sandbox`
+consegue ser construído. Só tem sentido no Windows, a única plataforma onde há
+letra de volume.
+_Avoid_: unidade, drive, partição
 
 **Configuração executável do alvo**:
 O que o repositório alvo carrega e que o git ou o Claude Code rodam sozinhos,
@@ -40,6 +50,16 @@ _Avoid_: grafo, RAG, índice de código
 Uma implementação concreta de índice de conhecimento, com seu próprio jeito de
 ser consultada. Um repositório pode ter vários ao mesmo tempo.
 _Avoid_: provider, engine, motor
+
+**Provedor de embeddings**:
+De onde vem o vetor da consulta na busca semântica de um **Índice de
+conhecimento**. Não é o **Backend**, que é o índice consultado, nem o
+**Provedor**, que é quem pensa a iteração; pode ser o mesmo Ollama que este sem
+ser o mesmo papel. Existe quando endereço e modelo estão resolvidos, e quem
+declara os dois é primeiro o repositório alvo. A configuração do Ralph
+sobrescreve, não origina. Sem modelo declarado não existe, e a busca semântica
+sai da sessão.
+_Avoid_: Ollama, backend de embeddings, provedor (sozinho, é o outro)
 
 **Iteração**:
 Uma passagem completa do loop sobre o repositório alvo: começa sem memória
@@ -81,8 +101,9 @@ _Avoid_: briefing, contexto, relatório
 **Provedor**:
 De onde vem a inferência de uma iteração. Não se confunde com **Backend**, que
 é implementação de índice de conhecimento: um responde "quem pensa", o outro
-"onde está X". Vale para a iteração inteira, não por fase — a Orientação roda
-como subagente do mesmo processo, e a base URL é do processo. O que cada fase
+"onde está X". Nem com o **Provedor de embeddings**, que serve à busca desse
+outro. Vale para a iteração inteira, não por fase — a Orientação roda como
+subagente do mesmo processo, e a base URL é do processo. O que cada fase
 escolhe dentro do Provedor é o modelo.
 _Avoid_: backend, motor, engine, modelo
 
@@ -92,3 +113,71 @@ flag explícita e nunca pelo relógio. Existe para gastar tempo de máquina
 ociosa em vez de token pago — não para sigilo, e não para velocidade.
 Ortogonal ao AFK: uma iteração pode ser assistida e ainda assim noturna.
 _Avoid_: modo offline, modo local, modo barato
+
+**Teto da iteração**:
+Quanto tempo uma iteração pode durar antes de o Ralph matar o `claude` e parar
+o loop. É paciência declarada pelo operador, não medida de velocidade: máquina
+lenta com modelo grande espera muito e está certa. O que o teto recusa é a
+espera infinita — o laço fechado que o **AFK** existe para dispensar e que,
+sem teto, queima a noite na iteração 1. Ele não é o corte por laço: aquele lê
+repetição no stream e mata em segundos, na Orientação ou no processo
+principal, e deixa o loop seguir.
+_Avoid_: timeout, deadline, limite de tempo
+
+**Orçamento de saída**:
+Quantos tokens o Provedor pode escrever numa resposta. É teto do pedido, não
+capacidade do Provedor, e não se confunde com o contexto, que é o que ele
+consegue ler. A distinção só passou a doer quando o modelo que raciocina antes
+de responder virou norma: o raciocínio gasta orçamento de saída e não deixa
+texto, e uma sonda que confunde os dois acusa de truncar o prompt quem leu o
+prompt inteiro.
+_Avoid_: max_tokens, limite de tokens, teto de resposta
+
+**Corte por orientação**:
+Matar a iteração assim que o **Resumo de orientação** volta dizendo que não há
+ticket para trabalhar. Irmão do **Corte por laço** e diferente dele no que lê:
+ali o sinal é repetição de chamada, aqui é o veredicto que já chega pronto no
+primeiro passo da iteração. Vale por si, sem a promise, porque quem leria o
+resumo e decidiria obedecê-lo é o mesmo modelo que acabou de ler a receita do
+ticket junto dele.
+_Avoid_: abort, corte por status, parada antecipada
+
+**Corte por laço**:
+Matar a iteração que repete a mesma chamada de ferramenta sem sair do lugar,
+lendo o stream em vez do relógio. Distingue-se do **Teto da iteração** por
+onde acerta e a que preço: o teto cobra uma hora de espera e para o loop; o
+corte sai em segundos e deixa o loop escolher outro ticket. Conta por fase,
+com teto próprio em cada uma, porque a **Orientação** que lê e relata não
+deveria repetir nada, enquanto o processo principal roda a mesma suíte de novo
+de forma legítima.
+_Avoid_: detecção de loop, anti-loop, watchdog
+
+**Fronteira**:
+Os tickets do repositório alvo que uma iteração pode pegar agora: rótulo de
+pronto para agente, bloqueador nenhum em aberto, ninguém trabalhando neles.
+Quem a define é o tracker do alvo, e o Ralph só a lê. Estar na fronteira não é
+o mesmo que ter trabalho: uma spec cujos filhos estão todos entregues continua
+lá até alguém tirar o rótulo, e foi assim que duas Orientações mandaram
+implementar o que já existia. A distinção é da **Orientação**, que lê o
+repositório e o diário e sabe dizer; nunca do Ralph, que não consulta tracker
+nenhum (ADR-0010).
+_Avoid_: frontier, fila, backlog, próximo ticket
+
+**Corte por resumo inválido**:
+Matar a iteração porque o **Resumo de orientação** veio errado — um `CLAIM` que
+é comando de escrita em vez de reivindicação, um `ready` sem ticket ou sem
+`CONTEXT`. É o avesso do **Corte por orientação**: ali o Ralph obedece ao
+resumo, aqui desconfia dele. Lê só o texto do resumo, e é por isso que alcança
+tão pouco: tudo que exigiria perguntar ao tracker fica fora, por escolha
+(ADR-0010). Como o **Corte por laço**, mata a iteração e deixa o loop seguir —
+o defeito é da resposta que aquele contexto produziu, e o próximo nasce limpo.
+_Avoid_: validação do contrato, corte por claim, sanity check
+
+**Campo à toa**:
+Campo do **Resumo de orientação** preenchido num resumo que para o loop — um
+ticket nomeado ou um `CONTEXT` escrito sob `complete` ou `blocked`. Vira aviso,
+nunca corte, porque o **Corte por orientação** já matou a iteração pelo
+`STATUS`: o estrago não é trabalho errado, é o operador lendo de manhã uma
+afirmação que ninguém conferiu. O `WHY` não conta como campo à toa, porque sob
+esses dois status é ele que o operador lê.
+_Avoid_: stray, campo órfão, resumo contraditório

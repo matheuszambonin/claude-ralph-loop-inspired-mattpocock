@@ -39,7 +39,13 @@ the code deliberately, watch the test go red, restore it.
 ## 5. Record and commit
 
 Append to `{{PROGRESS_FILE}}`: what you covered, the before/after number, and
-gaps you deliberately skipped with the reason. Commit to the current branch.
+gaps you deliberately skipped with the reason. Commit to the current branch,
+with a message ending in this line, copied verbatim:
+
+    {{SIGNATURE}}
+
+You can't rebuild that line from inside the sandbox, and it is what points a
+reviewer back to the log that holds the reasoning.
 
 ## Stop conditions
 

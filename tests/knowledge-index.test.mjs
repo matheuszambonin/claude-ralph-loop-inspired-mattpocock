@@ -9,6 +9,7 @@ import {
   describe,
   describeAvailability,
   describeDegradation,
+  describeMissingEmbeddingEnv,
   describeMcpFailure,
   describeInstallFailure,
   withInstallBlock,
@@ -342,6 +343,42 @@ test("describeAvailability: fala do índice de conhecimento e do label do backen
   assert.match(line, /índice de conhecimento/);
   assert.match(line, /\(code-review-graph\)/);
   assert.doesNotMatch(line, /Ollama/);
+});
+
+test("describeMissingEmbeddingEnv: sem code-review-graph detectado devolve null, mesmo sem env nenhum", () => {
+  assert.equal(describeMissingEmbeddingEnv([], {}), null);
+});
+
+test("describeMissingEmbeddingEnv: nada resolvido nas duas origens avisa, mostra a forma do campo e não enumera variável nenhuma", () => {
+  const line = describeMissingEmbeddingEnv(withCodeReviewGraphDetected(), resolveEmbeddingEnv({}, {}));
+  assert.match(line, /busca semântica/);
+  assert.match(line, /crgEmbeddingEnv/);
+  assert.match(line, /\.mcp\.json/);
+  assert.match(line, /tools do índice continuam funcionando/);
+  // A enumeração é o que a issue #22 tira do documento: a lista de variáveis
+  // do servidor do índice já divergiu uma vez, em silêncio.
+  assert.doesNotMatch(line, /CRG_OPENAI_/);
+});
+
+test("describeMissingEmbeddingEnv: env vindo do .mcp.json do alvo cala", () => {
+  const targetMcpConfig = { mcpServers: { [CRG_ID]: { env: { CRG_OPENAI_MODEL: "nomic-embed-text" } } } };
+  assert.equal(describeMissingEmbeddingEnv(withCodeReviewGraphDetected(), resolveEmbeddingEnv(targetMcpConfig, {})), null);
+});
+
+test("describeMissingEmbeddingEnv: env vindo só de crgEmbeddingEnv cala — as duas origens contam igual", () => {
+  const resolved = resolveEmbeddingEnv({}, { CRG_OPENAI_MODEL: "nomic-embed-text" });
+  assert.equal(describeMissingEmbeddingEnv(withCodeReviewGraphDetected(), resolved), null);
+});
+
+test("describeMissingEmbeddingEnv: env sem modelo declarado ainda é provedor nenhum — mesmo critério de embeddingTarget", () => {
+  const resolved = resolveEmbeddingEnv({}, { CRG_OPENAI_API_KEY: "ollama", CRG_OPENAI_BASE_URL: "http://localhost:11434/v1" });
+  assert.equal(embeddingTarget(resolved), null);
+  assert.ok(describeMissingEmbeddingEnv(withCodeReviewGraphDetected(), resolved));
+});
+
+test("describeMissingEmbeddingEnv: .mcp.json que declara só CRG_TOOLS não conta como provedor — resolveEmbeddingEnv o descarta", () => {
+  const targetMcpConfig = { mcpServers: { [CRG_ID]: { env: { CRG_TOOLS: "query_graph_tool" } } } };
+  assert.ok(describeMissingEmbeddingEnv(withCodeReviewGraphDetected(), resolveEmbeddingEnv(targetMcpConfig, {})));
 });
 
 test("describeDegradation: sem code-review-graph detectado devolve null", () => {

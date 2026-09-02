@@ -204,3 +204,90 @@ test("describeDrift: cabeçalho de template que este Ralph não distribui não d
   const { message } = describeDrift(check, ".ralph/prompt.md");
   assert.match(message, /inventado/);
 });
+
+/**
+ * A regressão da issue #65: `implement.md` mandava usar a ferramenta `Agent`,
+ * que o evento `init` da sessão no sandbox não anuncia — ele anuncia `Task` —
+ * e a chamada lançava o subagente em background, devolvendo um recibo no lugar
+ * do relatório. Três rodadas noturnas contra `ornith:9b` terminaram com a
+ * iteração orientando a si mesma, o oposto do que o ADR-0004 compra.
+ */
+test("implement.md: delega pela ferramenta que a sessão anuncia, e delega síncrono", () => {
+  const implement = readIterationTemplates().implement;
+  assert.match(implement, /`Task` tool/);
+  assert.doesNotMatch(implement, /\bAgent tool\b/);
+  // Os dois campos que a chamada de 28/08/2026 perdeu, um em cada rodada: sem
+  // `run_in_background: false` volta o recibo de lançamento, e sem
+  // `description` a chamada reprova com InputValidationError.
+  assert.match(implement, /`run_in_background: false`/);
+  assert.match(implement, /`description: "orient"`/);
+});
+
+/**
+ * A regressão da issue #73: o passo 2 mandava reivindicar o ticket "following
+ * `docs/agents/issue-tracker.md`", e a indireção não se pagava nem quando o
+ * documento respondia. O do Terraços prescreve o comando na linha 113, sob
+ * "Tomar"; medido em 28/08/2026 com esse documento inteiro no contexto, o
+ * `ornith:9b` reivindicou em 0 de 8 rodadas — ele lê, volta a `gh issue view`
+ * e `gh issue list`, e reentra na órbita da Orientação. Com o comando chegando
+ * pronto no resumo, 8/8. O `qwen3-coder:30b` falhava antes de ler: em 5 de 5
+ * chamava `Task` com `subagent_type: "issue-tracker"`, que não existe.
+ */
+test("implement.md: reivindica com o comando que veio da Orientação, e não delega o claim", () => {
+  const implement = readIterationTemplates().implement;
+  // O rótulo no bloco de contrato: `checkOrientationContract` só prova que os
+  // dois prompts batem entre si, então os dois podem perdê-lo juntos.
+  assert.match(implement, /^CLAIM: /m);
+  assert.match(implement, /run `CLAIM` with `Bash`/);
+  // O outro lado da issue: com o passo 1 recém ensinando `subagent_type`, o
+  // `qwen3-coder:30b` lia "issue-tracker" como agente e chamava `Task` com
+  // `subagent_type: "issue-tracker"`, que não existe, em 5 de 5 rodadas.
+  assert.match(implement, /`orientation` is\s+the only subagent that exists/);
+});
+
+/**
+ * A assinatura nasce da auditoria de 01/09/2026 no alvo Terraços: para saber
+ * qual das dezenove rodadas tinha entregue cada um dos treze tickets fechados
+ * foi preciso cruzar o `gh issue close` de dentro de cada log com o horário de
+ * fechamento no GitHub, e seis tickets ficaram sem resposta. O placeholder é o
+ * que o `runIteration` resolve com o log daquela iteração.
+ */
+test("todo prompt de iteração pede a assinatura, e ela é a mesma em todos", () => {
+  const templates = readIterationTemplates();
+  for (const name of ITERATION_PROMPTS) {
+    assert.match(templates[name], /\{\{SIGNATURE\}\}/, `${name} não pede a assinatura`);
+  }
+});
+
+/**
+ * Issue #81: a Orientação compôs `CLAIM: gh issue edit 21 --add-label
+ * "ready-for-agent"` e a iteração rodou. Do lado de lá o prompt agora proíbe
+ * compor esse comando; do lado de cá, rodá-lo. As duas linhas são da exceção
+ * que o CLAUDE.md guarda: proíbem o que o sandbox permite tecnicamente.
+ */
+test("implement.md: um CLAIM que aplica rótulo de triagem não é rodado", () => {
+  const step = readIterationTemplates()
+    .implement.split(/\n\s*\n/)
+    .find((p) => /^- `STATUS: ready`/m.test(p));
+  assert.ok(step, "o passo 2 não trata `STATUS: ready`");
+  assert.match(step, /triage label/i);
+  assert.match(step, /BLOCKED_PROMISE/);
+});
+
+/**
+ * Issue #78: o `implement.md` mandava tratar `CONTEXT` vazio como resumo
+ * malformado, sem distinguir o `STATUS`. A iteração repetia essa exigência ao
+ * delegar (log `2026-09-02T14-28-09-934Z-iter-01.jsonl`, linha 367), e a
+ * Orientação preenchia o campo mesmo quando parava o loop — foi ali que ela
+ * escreveu que a #19 do alvo seguia aberta, uma hora depois de fechar. O
+ * `orientation.md` agora pede o campo vazio nesses dois status; os dois
+ * prompts precisam pedir a mesma coisa.
+ */
+test("implement.md: CONTEXT vazio só é resumo malformado quando o STATUS é ready", () => {
+  const implement = readIterationTemplates()[DEFAULT_PROMPT];
+  const rule = implement.split(/\n\s*\n/).find((p) => /malformed/i.test(p));
+  assert.ok(rule, "nenhum parágrafo trata o resumo malformado");
+  assert.match(rule, /under `ready` an\s*\n?empty `CONTEXT` is malformed/i);
+  // E a polaridade do outro lado, sem a qual a regra passaria só por citar ready.
+  assert.match(rule, /under `complete` or `blocked` an\s*\n?empty `CONTEXT` is the shape/i);
+});

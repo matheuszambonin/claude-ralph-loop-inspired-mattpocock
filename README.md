@@ -70,6 +70,21 @@ backlog pequeno, 30–50 para grande. Termina quando o agente emite
 `<promise>COMPLETE</promise>` (backlog vazio), `<promise>BLOCKED</promise>`
 (precisa de um humano) ou quando o teto de iterações é atingido.
 
+O bloqueio vale mesmo quando o agente só o pensou: um modelo pequeno escreve
+"I should emit `<promise>BLOCKED</promise>`" enquanto raciocina e entrega um
+texto final sem a tag, e a noite inteira se vai reencontrando o mesmo backlog
+vazio. `COMPLETE` continua exigindo a tag no texto: o prompt lista as duas, e
+um "não é `<promise>COMPLETE</promise>`" pensado fecharia a noite como sucesso
+sobre um backlog cheio.
+
+O resumo de orientação decide sozinho, sem esperar a promise. Quando ele volta
+com `STATUS: blocked` ou `STATUS: complete`, o Ralph corta a iteração ali,
+antes de ela tocar no repositório alvo, e o desfecho é o mesmo da promise
+correspondente. Em 01/09/2026 um modelo de 9B leu `STATUS: blocked` e leu
+junto o `CONTEXT` que descrevia o que faltava num ticket; implementou, fechou
+a issue e commitou assim mesmo. Pedir ao prompt que a iteração ignore o que
+acabou de ler não segura isso. Ler o `STATUS` do lado de fora segura.
+
 Comece sempre HITL, refine o prompt, só então vá AFK.
 
 ## Como uma iteração funciona
@@ -78,7 +93,7 @@ Comece sempre HITL, refine o prompt, só então vá AFK.
 ralph afk -n 20
    │
    ├─ garante o sandbox do repo (docker sandbox create)
-   ├─ bootstrap: copia ~/.claude/plugins para dentro, configura git
+   ├─ bootstrap: copia ~/.claude/plugins para dentro, instala o gh oficial, configura git
    ├─ recusa rodar em main/master sem --allow-branch
    │
    └─ para cada iteração, um processo claude -p novo:
@@ -113,6 +128,12 @@ O que é montado (`ralph mounts` mostra):
 | esta ferramenta | idem | somente leitura |
 
 O seu home, suas chaves SSH e o resto do sistema ficam de fora.
+
+Repo que vive fora de disco local — Google Drive File Stream, OneDrive, volume
+de rede mapeado — não monta. O compartilhamento de arquivos do `docker sandbox`
+é virtiofs, e ele falha antes do boot da VM. O `ralph doctor` avisa e o
+`ralph login` explica; o que não existe é um modo sem sandbox para contornar
+(ADR-0011). A saída é trabalhar num clone em disco local.
 
 ### Autenticação
 
@@ -200,7 +221,9 @@ repositório alvo (Issues: read/write, Contents: read) e passe
   "sandboxName": "ralph-meu-repo-1feo4ed",
   "extraMounts": [],              // "C:\\caminho" ou "C:\\caminho:ro"
   "protectedBranches": ["main", "master"],
+  "crgEmbeddingEnv": {},          // env de embeddings do índice de conhecimento
   "cooldownSeconds": 0,
+  "iterationTimeoutSeconds": 3600, // teto de tempo de uma iteração
   "feedbackLoops": [              // detectado do package.json no init
     "npm run typecheck",
     "npm run test",
@@ -209,10 +232,34 @@ repositório alvo (Issues: read/write, Contents: read) e passe
 }
 ```
 
+`iterationTimeoutSeconds` é o teto de tempo de uma iteração. Estourado, o
+processo do `claude` morre, o log `.jsonl` daquela iteração fica em disco até
+onde chegou e o `afk` para — a mesma saída de qualquer iteração que falha, e
+pelo mesmo motivo: a máquina acabou de dar sinal de travamento. Uma hora é
+generoso de propósito, porque máquina lenta com modelo grande é espera longa
+legítima; o que não é legítimo é `ralph afk --night` queimando a noite inteira
+em laço fechado — e para esse o Ralph não espera o relógio: a iteração que
+repete a mesma chamada morre em segundos, seja a Orientação repetindo, seja o
+processo principal, e o loop segue para a próxima.
+
 `feedbackLoops` é a parte que mais decide a qualidade do resultado. São os
 comandos que o agente é proibido de contornar antes de commitar — sem eles,
 Ralph commita às cegas. Se o repo não é Node, preencha à mão (`cargo test`,
 `pytest -q`, `mise run check`, o que for).
+
+`crgEmbeddingEnv` só existe para repositório que tem índice de conhecimento
+(`code-review-graph`). São as variáveis de ambiente que o servidor do índice
+precisa para embeddar, as mesmas com que ele já roda no host. Quais são elas
+é pergunta para o `code-review-graph`, não para o Ralph. Quem responde é o
+`.mcp.json` do repositório alvo, que muda junto com o projeto, e por isso o
+Ralph lê o env declarado lá e usa como está. `crgEmbeddingEnv` sobrescreve
+chave a chave, para quem não tem `.mcp.json` ou quer um valor diferente dentro
+do sandbox. Endereço de loopback vira o host do Docker automaticamente, então
+escreva como se estivesse fora do container.
+
+Sem provedor de embeddings resolvido nas duas origens, `ralph doctor` avisa em
+amarelo. A busca semântica fica de fora, e as outras tools do índice continuam
+respondendo.
 
 ## Night mode
 
@@ -251,7 +298,11 @@ no mesmo Provedor — `ANTHROPIC_BASE_URL` é variável de processo, não de fas
     // teto de cada prova de /v1/messages do doctor e do aquecimento antes da
     // iteração 1; suba se a máquina é lenta e a espera é aceitável — night
     // mode gasta tempo ocioso, não token pago
-    "probeTimeoutSeconds": 900
+    "probeTimeoutSeconds": 900,
+    // quantos tokens a iteração pode escrever numa resposta; o padrão do
+    // Claude Code (32000) não cabe num modelo que raciocina antes de
+    // responder — o raciocínio gasta orçamento e não deixa texto
+    "maxOutputTokens": 64000
   }
 }
 ```
@@ -294,8 +345,13 @@ o sinal de "quero as provas agora" é pedir, não ter configurado.
 uma chamada de ferramenta resolve — alguns modelos anunciam a capacidade e
 escrevem a chamada como texto solto, e reprovam mesmo assim) e o **canário de
 contexto** (um prompt maior que qualquer `num_ctx` padrão do Ollama, que só
-aprova se a resposta cita o início do texto e não o fim). O canário tem teto de
-5 minutos: uma prova que não conclui nele é reportada como prova incompleta —
+aprova se a resposta cita o início do texto e não o fim). O canário lê só os
+blocos de texto da resposta, nunca o raciocínio: o modelo que pensa antes de
+responder cita as duas senhas enquanto pensa, e aceitar isso apagaria a
+distinção que a prova existe para fazer. Resposta vazia por esgotar o orçamento
+de saída é reportada como orçamento, não como truncamento. Cada prova tem o teto
+que o operador declarou em `nightProvider.probeTimeoutSeconds` (15 minutos por
+padrão): uma prova que não conclui nele é reportada como prova incompleta —
 o Provedor pode estar íntegro, só lento —, nunca como truncamento. Qualquer
 reprovação sai com o comando que conserta. Pular direto para `ralph afk --night` funciona,
 mas gasta a primeira noite aprendendo o que `once` teria mostrado num minuto.
@@ -332,6 +388,18 @@ Os placeholders `{{PROGRESS_FILE}}`, `{{COMPLETION_PROMISE}}`,
 `{{BLOCKED_PROMISE}}` e `{{FEEDBACK_LOOPS}}` são substituídos a cada iteração a
 partir do config.
 
+`{{SIGNATURE}}` é o quinto, e vem da iteração em vez do config: ele nomeia o
+modelo da rodada e o arquivo de log daquela iteração, e os três prompts pedem
+que ele feche o comentário do ticket e a mensagem de commit.
+
+```
+Ralph · modelo `ornith:9b` (--night) · log `.ralph/logs/2026-09-01T15-10-09-175Z-iter-01.jsonl`
+```
+
+Sem isso, saber qual rodada entregou um ticket exige cruzar o horário de
+fechamento no tracker com o `gh issue close` de dentro de cada log — e para
+uma parte dos tickets não há resposta.
+
 ### O prompt instalado é cópia, não rascunho
 
 Cada template carrega no topo a linha `<!-- ralph:prompt <nome> -->`, e a cópia
@@ -367,7 +435,7 @@ arquivo já é a cópia fiel, e `preservado` quando há algo a reinstalar.
 | Comando | O que faz |
 |---|---|
 | `ralph init [--prompt <nome>] [--force]` | cria `.ralph/` no repo atual |
-| `ralph doctor [--night]` | checa docker, sandbox, plugins, login e fonte de tarefas (com `--night`, também o Provedor local) |
+| `ralph doctor [--night]` | checa docker, sandbox, plugins, login, versão do `gh` e fonte de tarefas (com `--night`, também o Provedor local) |
 | `ralph login [--share-credentials]` | autentica o Claude dentro do sandbox |
 | `ralph gh-login [--token[=valor]]` | autentica o `gh` dentro do sandbox |
 | `ralph once [--allow-branch] [--night]` | uma iteração (HITL) |
