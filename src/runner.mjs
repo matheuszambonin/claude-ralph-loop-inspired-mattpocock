@@ -10,7 +10,7 @@ import {
   bootstrapScriptPath,
   inContainer,
 } from "./sandbox.mjs";
-import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatStuckLoop, orientationHalts } from "./stream.mjs";
+import { createStreamRenderer, foundPromise, paint, colors as C, accumulateModelUsage, formatCostByModel, formatOrientationWarning, formatSkillFailureWarning, formatOrientationMissWarning, formatStuckLoop, formatInvalidSummary, formatStrayTicket, orientationHalts } from "./stream.mjs";
 import { userPluginsDir, userClaudeDir } from "./paths.mjs";
 import { parse as parseCredentials, verdict as credentialVerdict, isAuthFailure, authFailureAdvice } from "./credentials.mjs";
 import { ralphDir } from "./config.mjs";
@@ -294,6 +294,17 @@ function warnIfSkillCallFailed(state, cfg) {
 }
 
 /**
+ * Amarelo, como os outros desta seção: o corte já aconteceu pelo `STATUS`, e
+ * quem lê o log de manhã merece saber que o relatório se contradizia (issue
+ * #82).
+ */
+function warnIfStrayTicket(state) {
+  const warning = formatStrayTicket(state.strayTicket);
+  if (!warning) return;
+  process.stdout.write(paint(C.yellow, `\n  ${warning}\n`));
+}
+
+/**
  * Aquecer o Provedor local antes da iteração 1 não é falha alta (issue #34,
  * diferente das três provas de `probeProviderBoth`) — a primeira iteração
  * carrega o modelo sozinha, só mais devagar, então isto só avisa.
@@ -354,6 +365,24 @@ export function describeOrientationHalt(status) {
 }
 
 /**
+ * Puro: o que o operador lê quando o resumo de orientação foi recusado (issue
+ * #82). Espelha `describeStuckLoop`, e não `describeOrientationHalt`, porque é
+ * defeito e não desfecho: o resumo veio, e veio errado.
+ *
+ * O conserto é sempre `orientationModel`, sem o par da fase que o laço tem —
+ * quem compôs o `CLAIM` e escolheu o ticket foi o Provedor da Orientação, e
+ * trocar o modelo da iteração inteira não muda uma linha do relatório.
+ */
+export function describeInvalidSummary({ iteration, invalid, logPath }) {
+  return (
+    `iteração ${iteration} cortada por resumo inválido: ${formatInvalidSummary(invalid)}.\n` +
+    `  Log até o corte: ${logPath}\n` +
+    `  Se o Provedor da Orientação não cumpre o contrato de prompts/orientation.md, ` +
+    `aponte orientationModel (ou nightProvider.orientationModel) para um modelo maior.`
+  );
+}
+
+/**
  * Puro: estado do stream e config entram, o desfecho da iteração sai. É a
  * costura da issue #79: o resumo de orientação vale por si, sem esperar a
  * promise que o modelo pequeno pode não escrever. `haltStatus` é o que faz
@@ -369,9 +398,17 @@ export function describeOrientationHalt(status) {
  * que mudaria é o backlog de fato vazio não conseguir mais dizer que acabou.
  *
  * O caminho `ready` não muda: ali o desfecho continua vindo só da promise.
+ *
+ * O resumo recusado (issue #82) não decide desfecho nenhum, e é o único jeito
+ * de as duas leituras do mesmo relatório não se contradizerem: o `STATUS` veio
+ * no mesmo texto que o `CLAIM` proibido, e obedecer a metade dele fecharia a
+ * noite em verde por conta de um resumo que o Ralph acabou de chamar de
+ * inválido. Sem `haltStatus`, a iteração cai no corte por resumo inválido, que
+ * anuncia o defeito e deixa a próxima escolher outro ticket.
  */
 export function iterationOutcome(state, cfg) {
-  const haltStatus = orientationHalts(state.orientationStatus) ? state.orientationStatus : null;
+  const haltStatus =
+    !state.invalidSummary && orientationHalts(state.orientationStatus) ? state.orientationStatus : null;
   return {
     haltStatus,
     complete: haltStatus === "complete" || foundPromise(state, cfg.completionPromise),
@@ -390,6 +427,18 @@ export function reportStuckLoop(root, cfg, result, iteration) {
   const logPath = path.relative(root, result.logPath);
   process.stdout.write(
     paint(C.red, `\n✗ ${describeStuckLoop({ iteration, loop: result.state.stuckLoop, logPath })}\n`)
+  );
+}
+
+/**
+ * O mesmo anúncio para o Corte por resumo inválido (issue #82). Sem o `cfg`
+ * dos irmãos: o conserto que a linha sugere é sempre o mesmo campo, e não
+ * depende de nada que o config diga.
+ */
+export function reportInvalidSummary(root, result, iteration) {
+  const logPath = path.relative(root, result.logPath);
+  process.stdout.write(
+    paint(C.red, `\n✗ ${describeInvalidSummary({ iteration, invalid: result.invalidSummary, logPath })}\n`)
   );
 }
 
@@ -481,10 +530,15 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     // sem o Ctrl+C teriam ficado a hora inteira do teto. Aqui o corte sai em
     // segundos, assim que a Orientação repete a mesma chamada dez vezes — ou o
     // processo principal repete a mesma vinte (issue #76).
-    // O laço (issues #74/#76) e o resumo de orientação que já decidiu a
-    // iteração (issue #79) cortam pela mesma porta: o que vem depois deles só
-    // gasta contexto, e no caso da #79 gasta commit no repositório alvo.
-    abortWhen: () => renderer.state.stuckLoop !== null || orientationHalts(renderer.state.orientationStatus),
+    // O laço (issues #74/#76), o resumo de orientação que já decidiu a
+    // iteração (issue #79) e o resumo que veio inválido (issue #82) cortam
+    // pela mesma porta: o que vem depois deles só gasta contexto, e nos dois
+    // últimos gasta escrita no repositório alvo — a #82 mediu a iteração
+    // aplicando um rótulo de triagem numa issue fechada.
+    abortWhen: () =>
+      renderer.state.stuckLoop !== null ||
+      renderer.state.invalidSummary !== null ||
+      orientationHalts(renderer.state.orientationStatus),
     extraArgs: [...extraArgs, ...mcpArgs, "--agents", JSON.stringify(agents)],
     onChunk: (chunk) => renderer.write(chunk),
   });
@@ -499,6 +553,7 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
   warnIfOrientationCeilingExceeded(state);
   warnIfOrientationMissed(state, cfg, prompt, timedOut || aborted);
   warnIfSkillCallFailed(state, cfg);
+  warnIfStrayTicket(state);
   await warnIfAuthFailed(state, cfg);
 
   // No estouro do teto, `code` é o do processo que nós matamos e o stderr é
@@ -521,6 +576,9 @@ export async function runIteration(root, cfg, { iteration = 1, total = 1, prompt
     // O corte por orientação também aborta o processo, e ele não é laço —
     // quem responde por `looped` é o que o stream mediu, não o abort.
     looped: aborted && state.stuckLoop !== null,
+    // O laço vem antes quando os dois acontecem: ele é o defeito mais grosso,
+    // e reportar os dois faria o operador procurar duas causas para um corte.
+    invalidSummary: aborted && state.stuckLoop === null ? state.invalidSummary : null,
     state,
     logPath: jsonl,
     haltStatus: outcome.haltStatus,
@@ -626,13 +684,20 @@ export async function runLoop(root, cfg, { iterations, allowBranch = false, extr
       process.stdout.write(paint(C.yellow, `\n■ Ralph travou na iteração ${i} e pediu um humano.\n`));
       return summary(i, cost, modelTotals, subagentTokens, started, "blocked", costing);
     }
-    // Laço é a exceção à regra do #67, e a única: a iteração morre, o loop
+    // Laço é a primeira exceção à regra do #67: a iteração morre, o loop
     // segue. Um Provedor que trava numa iteração não travou na máquina — em
     // 28/08/2026 as travadas e as boas se alternaram no mesmo `ornith:9b`,
     // quatro entregas entre quatro laços, e a próxima iteração escolhe outro
     // ticket. O que o corte já comprou é o laço custar segundos, não uma hora.
+    //
+    // O resumo inválido é a segunda (issue #82), pela mesma medida: o
+    // `ornith:9b` que compôs o `CLAIM` proibido em 01/09 devolveu um `blocked`
+    // correto em 33 segundos no dia seguinte, contra o mesmo alvo. Relatório
+    // ruim custa segundos, e a próxima iteração nasce com contexto limpo.
     if (result.looped) {
       reportStuckLoop(root, cfg, result, i);
+    } else if (result.invalidSummary) {
+      reportInvalidSummary(root, result, i);
     } else if (result.code !== 0) {
       // Estouro do teto para o loop pelo mesmo caminho de qualquer iteração
       // falha (issue #67): a máquina acabou de dar sinal de travamento, e

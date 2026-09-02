@@ -36,9 +36,12 @@ o comando. Prompt pede; código recusa.
 ## Consequences
 
 Sobra ao Ralph a classe de erro que se enxerga sem sair do texto, e ela é
-pequena de propósito. O `CLAIM` é recusado pela flag, nunca pelo subcomando: no
-Terraços o claim legítimo é `gh issue edit <n> --add-assignee @me` e o proibido é
-`gh issue edit <n> --add-label ...`, mesmo binário, mesmo verbo.
+pequena de propósito. O `CLAIM` que aplica rótulo é recusado pela flag, nunca
+pelo subcomando: no Terraços o claim legítimo é
+`gh issue edit <n> --add-assignee @me` e o proibido é
+`gh issue edit <n> --add-label ...`, mesmo binário, mesmo verbo. As outras
+quatro escritas — fechar, comentar, apagar, criar — não têm claim legítimo com
+que se confundir em tracker nenhum, e aí a palavra basta.
 
 Quem carrega o resto do julgamento é a Orientação, e é ela quem tem como. Saber
 se o trabalho de um ticket já foi feito se decide lendo o repositório e o

@@ -11,6 +11,9 @@ import {
   foundPromise,
   parseOrientationStatus,
   orientationHalts,
+  checkOrientationSummary,
+  formatInvalidSummary,
+  formatStrayTicket,
   ORIENTATION_LOOP_LIMIT,
   MAIN_LOOP_LIMIT,
   ORIENTATION_TARGET_LOOP_LIMIT,
@@ -812,4 +815,140 @@ test("createStreamRenderer: delegação que volta com erro não deixa STATUS (is
   feed(renderer, toolResult("toolu_1", { is_error: true, content: "STATUS: blocked" }));
   const state = renderer.end();
   assert.equal(state.orientationStatus, null);
+});
+
+// ------------------------------------------------ corte por resumo inválido --
+
+/**
+ * O resumo da rodada de 01/09/2026 20:43Z no alvo Terraços (issue #82): a
+ * Orientação escolheu uma issue fechada no dia anterior e compôs, como
+ * `CLAIM`, o comando que aplica o rótulo de triagem — o que promove o ticket
+ * à Fronteira, não o reivindica. A iteração rodou o comando.
+ */
+const LABEL_CLAIM_SUMMARY = [
+  "STATUS: ready",
+  "TICKET: #19 — A jusante em gradiente encosta no escoadouro",
+  'CLAIM:  gh issue edit 19 --add-label "ready-for-agent"',
+  "WHY: primeira da frente",
+  "CONTEXT: - terracos/core/ends.py",
+].join("\n");
+
+/** O claim legítimo do mesmo tracker: mesmo binário, mesmo verbo, outra flag. */
+const ASSIGNEE_CLAIM_SUMMARY = LABEL_CLAIM_SUMMARY.replace(
+  'gh issue edit 19 --add-label "ready-for-agent"',
+  "gh issue edit 19 --add-assignee @me"
+);
+
+test("checkOrientationSummary: o CLAIM que aplica rótulo corta a iteração (issue #82)", () => {
+  const { cut } = checkOrientationSummary(LABEL_CLAIM_SUMMARY);
+  assert.equal(cut?.kind, "claim-writes");
+  assert.match(cut.detail, /--add-label/);
+});
+
+test("checkOrientationSummary: o claim legítimo passa — a discriminação é pela flag (ADR-0010)", () => {
+  const { cut, stray } = checkOrientationSummary(ASSIGNEE_CLAIM_SUMMARY);
+  assert.equal(cut, null);
+  assert.equal(stray, null);
+});
+
+test("checkOrientationSummary: fechar, comentar, apagar e criar também são escrita (issues #77, #82)", () => {
+  const claim = (command) => `STATUS: ready\nTICKET: #19 x\nCLAIM: ${command}\nWHY: y`;
+  for (const command of [
+    "gh issue close 19",
+    "gh issue comment 19 --body 'claiming'",
+    "gh issue delete 19",
+    "gh issue create --title 'sub-ticket'",
+  ]) {
+    assert.equal(checkOrientationSummary(claim(command)).cut?.kind, "claim-writes", command);
+  }
+});
+
+test("checkOrientationSummary: o CLAIM que o modelo quebrou em duas linhas não escapa", () => {
+  // O bloco de contrato de `prompts/orientation.md` desenha o `CLAIM:` em
+  // quatro linhas, então o modelo quebra o comando.
+  const summary = [
+    "STATUS: ready",
+    "TICKET: #19 x",
+    "CLAIM: gh issue edit 19 \\",
+    '  --add-label "ready-for-agent"',
+    "WHY: y",
+  ].join("\n");
+  assert.equal(checkOrientationSummary(summary).cut?.kind, "claim-writes");
+});
+
+test("checkOrientationSummary: a palavra de escrita dentro de flag não é subcomando", () => {
+  // `--create` cria uma branch para o trabalho, não um ticket, e é claim
+  // plausível num repo sem tracker remoto.
+  const summary = ["STATUS: ready", "TICKET: #19 x", "CLAIM: git switch --create ralph/19", "WHY: y"].join("\n");
+  assert.equal(checkOrientationSummary(summary).cut, null);
+});
+
+test("checkOrientationSummary: resumo sem CLAIM nenhum não é escrita", () => {
+  assert.equal(checkOrientationSummary(SUMMARY).cut, null);
+});
+
+test("checkOrientationSummary: ready sem ticket corta — a iteração trabalharia às cegas (issue #82)", () => {
+  const summary = "STATUS: ready\nTICKET:\nCLAIM:\nWHY: a frente parece vazia";
+  assert.equal(checkOrientationSummary(summary).cut?.kind, "ready-without-ticket");
+});
+
+test("checkOrientationSummary: TICKET que não nomeia ticket nenhum é TICKET vazio", () => {
+  // `(none — frontier empty)` foi medido em resumo real (issue #79). Id de
+  // ticket traz dígito; essa prosa não traz nenhum.
+  const summary = "STATUS: ready\nTICKET: (none — frontier empty)\nWHY: a frente está vazia";
+  assert.equal(checkOrientationSummary(summary).cut?.kind, "ready-without-ticket");
+});
+
+test("checkOrientationSummary: o eco do bloco de contrato não orienta ninguém e corta", () => {
+  const echo = "STATUS: ready | complete | blocked\nTICKET: <id and title>\nCLAIM: <the exact shell command>";
+  assert.equal(checkOrientationSummary(echo).cut?.kind, "ready-without-ticket");
+});
+
+test("checkOrientationSummary: blocked com ticket nomeado é aviso, não corte (issue #82)", () => {
+  const summary = "STATUS: blocked\nTICKET: #19 — a que travou\nWHY: espera triagem";
+  const { cut, stray } = checkOrientationSummary(summary);
+  assert.equal(cut, null);
+  assert.match(formatStrayTicket(stray), /#19/);
+});
+
+test("checkOrientationSummary: o blocked medido em 01/09 não ganha aviso nenhum (issue #79)", () => {
+  const { cut, stray } = checkOrientationSummary(BLOCKED_SUMMARY);
+  assert.equal(cut, null);
+  assert.equal(formatStrayTicket(stray), "");
+});
+
+test("createStreamRenderer: o resumo com CLAIM de escrita marca o corte (issue #82)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { description: "orient", subagent_type: "orientation", run_in_background: false }));
+  feed(renderer, toolResult("toolu_1", { content: [{ type: "text", text: LABEL_CLAIM_SUMMARY }] }));
+  const state = renderer.end();
+  assert.equal(state.invalidSummary?.kind, "claim-writes");
+  assert.equal(state.orientationStatus, "ready");
+});
+
+test("createStreamRenderer: o resumo bom não marca corte nenhum (issue #82)", () => {
+  const renderer = createStreamRenderer();
+  feed(renderer, delegation("toolu_1", { description: "orient", subagent_type: "orientation", run_in_background: false }));
+  feed(renderer, toolResult("toolu_1", { content: [{ type: "text", text: SUMMARY }] }));
+  const state = renderer.end();
+  assert.equal(state.invalidSummary, null);
+  assert.equal(state.strayTicket, null);
+});
+
+test("createStreamRenderer: o que não é resumo de orientação não vira corte (issue #82)", () => {
+  const renderer = createStreamRenderer();
+  // O `Bash` do principal que grepa os próprios logs do Ralph traz a linha
+  // `CLAIM:` com o comando proibido dentro, sem nunca ter orientado ninguém.
+  feed(renderer, mainTool("toolu_1", "Bash", { command: "grep -r CLAIM: .ralph/logs" }));
+  feed(renderer, toolResult("toolu_1", { content: LABEL_CLAIM_SUMMARY }));
+  const state = renderer.end();
+  assert.equal(state.invalidSummary, null);
+});
+
+test("formatInvalidSummary: diz o defeito e o comando que o denuncia", () => {
+  const { cut } = checkOrientationSummary(LABEL_CLAIM_SUMMARY);
+  const line = formatInvalidSummary(cut);
+  assert.match(line, /CLAIM/);
+  assert.match(line, /--add-label/);
+  assert.equal(formatInvalidSummary(null), "");
 });

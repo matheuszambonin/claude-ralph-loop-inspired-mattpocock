@@ -10,6 +10,7 @@ import {
   describeIterationTimeout,
   describeStuckLoop,
   describeOrientationHalt,
+  describeInvalidSummary,
   iterationOutcome,
 } from "../src/runner.mjs";
 import { buildOrientationPrompt } from "../src/orientation.mjs";
@@ -155,7 +156,7 @@ test("describeStuckLoop: o laço do principal aponta o modelo da iteração, nã
 
 /** O estado que o renderizador entrega ao fim de uma iteração, no mínimo. */
 function streamState(extra = {}) {
-  return { text: "", thinking: "", finalResult: null, orientationStatus: null, stuckLoop: null, ...extra };
+  return { text: "", thinking: "", finalResult: null, orientationStatus: null, stuckLoop: null, invalidSummary: null, ...extra };
 }
 
 test("iterationOutcome: STATUS blocked decide o desfecho sem promise nenhuma (issue #79)", () => {
@@ -197,4 +198,36 @@ test("describeOrientationHalt: nomeia o corte e o que a iteração não chegou a
   assert.match(describeOrientationHalt("complete"), /complete/);
   // O que o operador precisa saber é que nada foi tocado no alvo.
   assert.match(describeOrientationHalt("blocked"), /antes de tocar no repositório alvo/);
+});
+
+test("describeInvalidSummary: nomeia a iteração, o CLAIM recusado e o log (issue #82)", () => {
+  const msg = describeInvalidSummary({
+    iteration: 2,
+    invalid: { kind: "claim-writes", does: "mexe em rótulo", detail: 'gh issue edit 19 --add-label "ready-for-agent"' },
+    logPath: ".ralph/logs/2026-09-01T20-43-33-423Z-iter-01.jsonl",
+  });
+  assert.match(msg, /iteração 2/);
+  assert.match(msg, /--add-label/);
+  assert.match(msg, /2026-09-01T20-43-33-423Z-iter-01\.jsonl/);
+});
+
+test("describeInvalidSummary: o conserto é o modelo da Orientação, que é quem compôs o resumo", () => {
+  const msg = describeInvalidSummary({
+    iteration: 1,
+    invalid: { kind: "ready-without-ticket", detail: "" },
+    logPath: ".ralph/logs/x.jsonl",
+  });
+  assert.match(msg, /orientationModel/);
+  assert.doesNotMatch(msg, /nightProvider\.model\b/);
+});
+
+test("iterationOutcome: resumo recusado não fecha o backlog nem trava o loop (issue #82)", () => {
+  // O `STATUS` veio no mesmo relatório que o `CLAIM` proibido. Obedecer a
+  // metade dele fecharia a noite em verde por conta de um resumo que o Ralph
+  // acabou de recusar.
+  const state = streamState({
+    orientationStatus: "complete",
+    invalidSummary: { kind: "claim-writes", does: "mexe em rótulo", detail: "gh issue edit 19 --add-label x" },
+  });
+  assert.deepEqual(iterationOutcome(state, baseCfg()), { haltStatus: null, complete: false, blocked: false });
 });

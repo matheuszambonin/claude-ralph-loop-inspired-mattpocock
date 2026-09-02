@@ -19,7 +19,7 @@ import {
   describeWorkspacesOutsideLocalDisk,
   describeSandboxGh,
 } from "./sandbox.mjs";
-import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth, reportIterationTimeout, reportStuckLoop } from "./runner.mjs";
+import { runLoop, runIteration, prepare, buildPrompt, currentBranch, ensureBootstrap, ensureSetup, checkAuth, reportIterationTimeout, reportStuckLoop, reportInvalidSummary } from "./runner.mjs";
 import { paint, colors as C } from "./stream.mjs";
 import {
   detect as detectKnowledgeIndex,
@@ -434,6 +434,9 @@ async function cmdOnce(flags) {
   // E o corte por laço (issue #74) pelo mesmo motivo: aqui quem assiste viu a
   // iteração repetindo, mas quem lê o código de saída depois não viu nada.
   else if (res.looped) reportStuckLoop(root, cfg, res, 1);
+  // E o corte por resumo inválido (issue #82) pelo mesmo motivo: sem a linha,
+  // o CLAIM que o Ralph recusou nunca chega a quem lê o código de saída.
+  else if (res.invalidSummary) reportInvalidSummary(root, res, 1);
   // O corte por orientação (issue #79) é desfecho, não falha, e sairia com
   // código 1 se ninguém dissesse o contrário: quem aborta o processo é o
   // Ralph, e o `claude` morto não devolve 0. Só ele — a iteração que morreu

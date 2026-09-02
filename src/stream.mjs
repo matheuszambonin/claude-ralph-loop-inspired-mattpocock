@@ -130,6 +130,97 @@ export function orientationHalts(status) {
   return HALTING_STATUSES.includes(status);
 }
 
+/**
+ * O que um `CLAIM` não pode fazer, por classe, com o que o operador lê quando
+ * faz (issue #82). Em 01/09/2026 a Orientação compôs
+ * `gh issue edit 19 --add-label "ready-for-agent"` como claim de uma issue
+ * fechada, e a iteração rodou o comando: rótulo de triagem promove o ticket à
+ * Fronteira, não o reivindica.
+ *
+ * O rótulo é recusado pela flag, nunca pelo verbo — no mesmo tracker o claim
+ * legítimo é `gh issue edit <n> --add-assignee @me`, mesmo binário e mesmo
+ * `edit` (ADR-0010). As outras quatro escritas não têm claim legítimo com que
+ * se confundir, e aí a palavra basta: nenhum tracker reivindica um ticket
+ * fechando, comentando, apagando ou criando outro.
+ *
+ * Nessas quatro a palavra só conta como subcomando, nunca dentro de flag
+ * (`(?<![-\w])`): `git switch --create ralph/19` cria uma branch para o
+ * trabalho, não um ticket, e é claim plausível em repo sem tracker remoto.
+ *
+ * Tirar rótulo entra junto de pôr: `--remove-label ready-for-agent` tira o
+ * ticket da Fronteira, que é a mesma escrita de triagem pelo avesso. O preço é
+ * recusar o claim que reivindica e limpa a triagem no mesmo comando, e o
+ * contrato pede o comando que reivindica, não um combo.
+ */
+const CLAIM_WRITES = [
+  { does: "mexe em rótulo", pattern: /--(add-|remove-)?labels?\b/i },
+  { does: "fecha o ticket", pattern: /(?<![-\w])close\b|--state[=\s]+closed\b/i },
+  { does: "comenta no ticket", pattern: /(?<![-\w])comment\b/i },
+  { does: "apaga o ticket", pattern: /(?<![-\w])delete\b/i },
+  { does: "cria ticket", pattern: /(?<![-\w])create\b/i },
+];
+
+// O fim do valor é o próximo rótulo ou o fim do texto, e o fim do texto se
+// escreve `(?![\s\S])`: com a flag `m`, um `$` casaria em toda quebra de linha
+// e o valor pararia na primeira delas — que é justamente o `CLAIM` de duas
+// linhas escapando.
+const SUMMARY_FIELD = /^([A-Z_]{2,}):[ \t]*([\s\S]*?)(?=\n[A-Z_]{2,}:|(?![\s\S]))/gm;
+
+/**
+ * Puro: o valor de um rótulo do contrato de `prompts/orientation.md`, da linha
+ * dele até o próximo rótulo. Multi-linha porque o `CLAIM` que o modelo quebrou
+ * em duas continua sendo o comando inteiro, e ler só a primeira linha deixaria
+ * a flag proibida escapar na segunda — o bloco do contrato desenha o `CLAIM:`
+ * ocupando quatro linhas, então o modelo quebra.
+ */
+function summaryField(summary, label) {
+  for (const m of (summary ?? "").matchAll(SUMMARY_FIELD)) {
+    if (m[1] === label) return m[2].trim();
+  }
+  return "";
+}
+
+/**
+ * O `TICKET` que nomeia um ticket de verdade traz o id dele, e id traz dígito.
+ * É o que separa o resumo que aponta trabalho do que só preencheu a linha:
+ * `(none — frontier empty)` saiu de resumo real (issue #79), e o eco do bloco
+ * de contrato, `<id and title>`, não aponta ticket nenhum tampouco.
+ */
+function hasTicketId(ticket) {
+  return /\d/.test(ticket);
+}
+
+/**
+ * Puro: o **Resumo de orientação** entra, o **Corte por resumo inválido** sai
+ * — `{ cut, stray }`, os dois `null` quando o resumo passa (issue #82).
+ *
+ * Corta duas coisas, e as duas se enxergam sem sair do texto: o `CLAIM` que é
+ * comando de escrita em vez de reivindicação, e o `ready` que não nomeia
+ * ticket, que mandaria a iteração trabalhar às cegas. O que exigiria perguntar
+ * ao tracker do alvo — se aquele ticket está mesmo na Fronteira — fica fora,
+ * por escolha registrada no ADR-0010.
+ *
+ * O inverso do segundo, `blocked` ou `complete` com ticket nomeado, sai em
+ * `stray` e é aviso, não corte: o Corte por orientação já para tudo pelo
+ * `STATUS`, e a Orientação pode ter nomeado por gentileza o ticket que travou.
+ */
+export function checkOrientationSummary(summary) {
+  const status = parseOrientationStatus(summary);
+  const claim = summaryField(summary, "CLAIM");
+  const ticket = summaryField(summary, "TICKET");
+
+  const write = CLAIM_WRITES.find((w) => w.pattern.test(claim));
+  if (write) return { cut: { kind: "claim-writes", does: write.does, detail: claim }, stray: null };
+
+  if (status === "ready" && !hasTicketId(ticket)) {
+    return { cut: { kind: "ready-without-ticket", detail: ticket }, stray: null };
+  }
+  if (orientationHalts(status) && hasTicketId(ticket)) {
+    return { cut: null, stray: { status, ticket } };
+  }
+  return { cut: null, stray: null };
+}
+
 export function createStreamRenderer({ onEvent } = {}) {
   const state = {
     text: "",
@@ -147,6 +238,8 @@ export function createStreamRenderer({ onEvent } = {}) {
     orientationSummaries: 0,
     orientationDelegatedTo: null,
     orientationStatus: null,
+    invalidSummary: null,
+    strayTicket: null,
     failedSkills: [],
     stuckLoop: null,
   };
@@ -357,6 +450,12 @@ ${detail}`;
             // Só daqui: um `Bash` que grepa os próprios logs do Ralph traz a
             // linha `STATUS:` no `tool_result` sem ter orientado ninguém.
             state.orientationStatus = parseOrientationStatus(body);
+            // E o corte por resumo inválido pela mesma porta (issue #82): o
+            // corpo do resumo passa por aqui inteiro, uma vez só, e é o único
+            // lugar do Ralph que chega a vê-lo.
+            const check = checkOrientationSummary(body);
+            state.invalidSummary = check.cut;
+            state.strayTicket = check.stray;
           }
           if (subagentCalls.has(block.tool_use_id)) {
             const tokens = parseSubagentTokens(body);
@@ -516,6 +615,18 @@ export function formatSkillFailureWarning(failedSkills) {
 }
 
 /**
+ * O outro lado do Corte por resumo inválido (issue #82): o resumo que para a
+ * iteração pelo `STATUS` e nomeia um ticket assim mesmo. Aviso e não corte
+ * porque o Corte por orientação já mata tudo antes de o repositório alvo ser
+ * tocado; o que sobra é a incoerência de um relatório que aponta trabalho e
+ * diz que não há.
+ */
+export function formatStrayTicket(stray) {
+  if (!stray) return "";
+  return `⚠ a Orientação reportou ${stray.status} e nomeou um ticket assim mesmo (${stray.ticket}) — nada será trabalhado`;
+}
+
+/**
  * Pura para ser testável sem Docker (issue #9) — espelha o `cost +=` que
  * `runLoop` já faz, mas por modelo. `modelUsage` ausente (iteração que não
  * chegou a reportar custo) devolve `totals` intacto em vez de zerar o loop.
@@ -574,4 +685,19 @@ export function formatStuckLoop(loop) {
     return `${who} refez ${loop.count} chamadas de ${loop.tool}${detail} que já tinha feito — laço fechado`;
   }
   return `${who} repetiu ${loop.count}x o mesmo ${loop.tool}${detail} — laço fechado`;
+}
+
+/**
+ * Puro: a linha que o operador lê quando o resumo de orientação foi recusado
+ * (issue #82). Traz o `CLAIM` inteiro, porque é ele a prova — em 01/09/2026 o
+ * comando dizia `--add-label`, e quem lê o log precisa ver a flag para saber
+ * que não foi a iteração que inventou de escrever no tracker.
+ */
+export function formatInvalidSummary(invalid) {
+  if (!invalid) return "";
+  if (invalid.kind === "claim-writes") {
+    return `a Orientação devolveu um CLAIM que ${invalid.does} em vez de reivindicar o ticket: ${invalid.detail}`;
+  }
+  const said = invalid.detail ? ` (TICKET: ${invalid.detail})` : "";
+  return `a Orientação devolveu STATUS: ready sem nomear ticket${said} — a iteração trabalharia às cegas`;
 }
