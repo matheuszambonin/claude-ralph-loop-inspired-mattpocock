@@ -6,9 +6,10 @@ conceito geral de programação não entra aqui, mesmo que o código use muito.
 ## Language
 
 **Repositório alvo**:
-O repositório em que o loop trabalha, sempre outro que não o do Ralph. Existe
-antes do Ralph e é curado à mão para as sessões que rodam no host; o Ralph se
-adapta a ele, nunca o contrário.
+O repositório em que o loop trabalha. Existe antes do Ralph e é curado à mão
+para as sessões que rodam no host; o Ralph se adapta a ele, nunca o contrário.
+Pode ser o próprio repositório do Ralph, e foi assim que rodaram as iterações
+cobradas que o ADR-0004 mede.
 _Avoid_: projeto, repo do usuário, workspace
 
 **Sandbox**:
@@ -181,3 +182,20 @@ nunca corte, porque o **Corte por orientação** já matou a iteração pelo
 afirmação que ninguém conferiu. O `WHY` não conta como campo à toa, porque sob
 esses dois status é ele que o operador lê.
 _Avoid_: stray, campo órfão, resumo contraditório
+
+**Turno**:
+A unidade que o Provedor conta e cobra dentro de uma **Iteração**, e o número
+que o Ralph imprime quando ela acaba. Não é o **Passo do modelo**: um turno
+abrange vários, e nos cinco logs de 24/08 a razão foi de 2,8 para 1. A confusão
+entre os dois já custou caro. A tabela de repartição do ADR-0004 dividiu tokens
+por passos e chamou o resultado de tokens por turno.
+_Avoid_: rodada, turno do agente, num_turns (é o campo que o carrega, não o
+termo)
+
+**Passo do modelo**:
+Cada vez que o modelo fala dentro de uma **Iteração**, seja texto, raciocínio
+ou chamada de ferramenta. Existe como termo porque é a contagem que acompanha o
+custo: o custo por passo varia bem menos entre iterações do que o custo por
+iteração, e é nele que uma economia aparece antes de aparecer na fatura. Não
+sai em relatório nenhum do Ralph, só nos logs.
+_Avoid_: turno, mensagem, evento
