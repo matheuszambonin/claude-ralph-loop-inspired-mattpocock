@@ -294,9 +294,14 @@ o sinal de "quero as provas agora" é pedir, não ter configurado.
 uma chamada de ferramenta resolve — alguns modelos anunciam a capacidade e
 escrevem a chamada como texto solto, e reprovam mesmo assim) e o **canário de
 contexto** (um prompt maior que qualquer `num_ctx` padrão do Ollama, que só
-aprova se a resposta cita o início do texto e não o fim). O canário lê só os
-blocos de texto da resposta, nunca o raciocínio: o modelo que pensa antes de
-responder cita as duas senhas enquanto pensa, e aceitar isso apagaria a
+aprova se a resposta cita o início do texto e não o fim). O canário mede o
+próprio tamanho em vez de estimá-lo: antes de montar o prompt grande ele
+pergunta ao Provedor quantos tokens ele conta em duas amostras pequenas, porque
+a razão entre caracteres e tokens é do tokenizer do modelo e nenhuma constante
+serve para dois modelos (ADR-0012). A linha verde diz quantos tokens foram
+provados contra quantos foram declarados. O canário lê só os blocos de texto da
+resposta, nunca o raciocínio: o modelo que pensa antes de responder cita as duas
+senhas enquanto pensa, e aceitar isso apagaria a
 distinção que a prova existe para fazer. Resposta vazia por esgotar o orçamento
 de saída é reportada como orçamento, não como truncamento. Cada prova tem o teto
 que o operador declarou em `nightProvider.probeTimeoutSeconds` (15 minutos por

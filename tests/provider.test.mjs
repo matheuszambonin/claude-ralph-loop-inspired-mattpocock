@@ -8,6 +8,7 @@ import {
   probeFromSandbox,
   probeBoth,
   preload,
+  canaryFiller,
   describeAvailability,
   describeProbeStart,
   describeDegradation,
@@ -134,17 +135,56 @@ function jsonResponse(body) {
   return { ok: true, status: 200, json: async () => body };
 }
 
-/** fetchImpl injetado: `/api/tags` sempre aprova, `/v1/messages` devolve a
- *  resposta de tool_use quando o corpo declara `tools`, senão a do canário. */
-function mockFetch({ toolUseResponse, canaryAnswer, canaryError, canaryResponse }) {
+/** Envelope do chat que todo pedido carrega (issue #55): o `input_tokens` conta
+ *  o template do modelo junto com o filler. Medido contra `devstral:24b` no
+ *  Ollama 0.33.0, ele são 1226 tokens — um system prompt inteiro, não os 10 a
+ *  20 que a triagem supunha. */
+const MOCK_ENVELOPE_TOKENS = 1226;
+
+/** Contagem que um Provedor de razão `charsPerToken` devolveria para um prompt
+ *  de `chars` caracteres. */
+function usageFor(chars, charsPerToken, envelope = MOCK_ENVELOPE_TOKENS) {
+  return { input_tokens: Math.round(chars / charsPerToken) + envelope };
+}
+
+/** fetchImpl injetado: `/api/tags` sempre aprova, e `/v1/messages` separa as
+ *  pernas pelo corpo — `tools` é a prova de tool_use, `max_tokens: 1` são os
+ *  dois pedidos da calibragem, o resto é o canário. Pelo corpo e não pela
+ *  ordem de chamada, que amarraria o teste à sequência interna de `probe()`.
+ *
+ *  `calibrationRatio` é a razão que o Provedor simulado tem; `null` faz a
+ *  resposta voltar sem `usage`, que é o Provedor em que a calibragem não tem o
+ *  que ler. */
+function mockFetch({
+  toolUseResponse,
+  canaryAnswer,
+  canaryError,
+  canaryResponse,
+  calibrationRatio = 4,
+  calibrationEnvelope = MOCK_ENVELOPE_TOKENS,
+  calibrationError,
+}) {
   return async (url, opts) => {
     if (url.endsWith("/api/tags")) return jsonResponse({});
     if (url.endsWith("/v1/messages")) {
       const body = JSON.parse(opts.body);
       if (body.tools) return jsonResponse(toolUseResponse);
+      const prompt = body.messages[0].content;
+      if (body.max_tokens === 1) {
+        if (calibrationError) throw calibrationError;
+        const usage =
+          calibrationRatio === null ? undefined : usageFor(prompt.length, calibrationRatio, calibrationEnvelope);
+        return jsonResponse({ stop_reason: "max_tokens", content: [], usage });
+      }
       if (canaryError) throw canaryError;
-      if (canaryResponse) return jsonResponse(canaryResponse);
-      return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: canaryAnswer }] });
+      const usage =
+        calibrationRatio === null ? undefined : usageFor(prompt.length, calibrationRatio, calibrationEnvelope);
+      if (canaryResponse) return jsonResponse({ usage, ...canaryResponse });
+      return jsonResponse({
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: canaryAnswer }],
+        usage,
+      });
     }
     throw new Error("url inesperada: " + url);
   };
@@ -206,6 +246,7 @@ test("probe: porta fechada (fetchImpl lança) devolve reachable false sem propag
     contextOk: false,
     contextTimedOut: false,
     outputExhausted: false,
+    contextTokens: null,
     redirect: null,
   });
 });
@@ -235,6 +276,7 @@ test("probe: prompt do canário cresce com o minContext declarado", async () => 
     if (url.endsWith("/api/tags")) return jsonResponse({});
     const body = JSON.parse(opts.body);
     if (body.tools) return jsonResponse({ stop_reason: "tool_use", content: [{ type: "tool_use", name: "answer" }] });
+    if (body.max_tokens === 1) return jsonResponse({ stop_reason: "max_tokens", content: [] });
     ref.len = body.messages[0].content.length;
     return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: "SENHA_INICIAL" }] });
   };
@@ -266,6 +308,7 @@ test("probe: devolve só os vereditos das provas — nada da resposta bruta do c
   assert.deepEqual(Object.keys(result).sort(), [
     "contextOk",
     "contextTimedOut",
+    "contextTokens",
     "outputExhausted",
     "reachable",
     "redirect",
@@ -389,6 +432,7 @@ test("probeBoth: as duas pernas aprovando devolve alcance com as outras provas d
     contextOk: true,
     contextTimedOut: false,
     outputExhausted: false,
+    contextTokens: result.contextTokens,
     redirect: null,
     reachableFromHost: true,
     reachableFromSandbox: true,
@@ -957,6 +1001,7 @@ test("probe: o canário pede mais orçamento de saída que a prova de tool_use",
       seen.toolUse = body.max_tokens;
       return jsonResponse(APPROVED_TOOL_USE);
     }
+    if (body.max_tokens === 1) return jsonResponse({ stop_reason: "max_tokens", content: [] });
     seen.canary = body.max_tokens;
     return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: "SENHA_INICIAL" }] });
   };
@@ -1017,4 +1062,267 @@ test("describeDegradation: esgotamento com redirect ou sem alcance perde para as
     describeDegradation(unreachable, 65536, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900),
     /OLLAMA_HOST/,
   );
+});
+
+// --- o canário mede o próprio tamanho (issue #55) ---
+//
+// A constante `CANARY_CHARS_PER_TOKEN` errava 7% contra um modelo e 24% contra
+// outro, sempre para menos: o Provedor era aprovado tendo provado menos
+// contexto do que o operador declarou. A razão é propriedade do tokenizer do
+// modelo, então nenhum número escrito aqui serviria. O que estes testes prendem
+// é a medição substituindo a estimativa, e o que a sonda diz quando não mede.
+
+/** Tokens que o canário se propõe a provar: o declarado menos o orçamento de
+ *  saída, o mesmo `CANARY_MAX_TOKENS` que `probe()` pede na resposta. */
+function targetTokens(minContext) {
+  return minContext - 1024;
+}
+
+/** Piso da conferência: o alvo menos a folga que absorve a resolução da
+ *  calibragem, o mesmo meio por cento de `CANARY_PROOF_SLACK`. */
+function proofFloor(minContext) {
+  return Math.floor(targetTokens(minContext) * 0.995);
+}
+
+test("canaryFiller: a razão entra como argumento e manda no tamanho do texto", () => {
+  // 75 caracteres por unidade, e o filler sobe em unidades inteiras.
+  assert.equal(canaryFiller(1000, 4).length, 4050);
+  assert.equal(canaryFiller(1000, 8).length, 8025);
+  assert.equal(canaryFiller(2000, 4).length, 8025);
+});
+
+test("canaryFiller: o texto que sai é CANARY_UNIT repetido, nunca cortado no meio", () => {
+  const filler = canaryFiller(1000, 4);
+  assert.equal(filler.length % 75, 0);
+  assert.match(filler, /^texto de preenchimento/);
+});
+
+test("probe: a razão sai de dois pontos, e o envelope do chat cancela na subtração", async () => {
+  // O Provedor simulado conta 12 tokens de template em todo pedido. Com um
+  // ponto só a razão sairia baixa e o prompt nasceria curto; com dois, o
+  // envelope some e o prompt cai dentro da banda entre o alvo e o declarado.
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryAnswer: "SENHA_INICIAL",
+    calibrationRatio: 5.353,
+  });
+  const result = await probe(fakeProvider({ minContext: 131072 }), { fetchImpl });
+  assert.ok(result.contextTokens >= proofFloor(131072), `provou ${result.contextTokens} tokens`);
+  assert.ok(result.contextTokens <= 131072, "o prompt não passa do contexto declarado");
+});
+
+test("probe: a razão medida vence a constante — dois tokenizers diferentes recebem prompts diferentes", async () => {
+  const sizes = {};
+  const capture = (ratio) => async (url, opts) => {
+    if (url.endsWith("/api/tags")) return jsonResponse({});
+    const body = JSON.parse(opts.body);
+    if (body.tools) return jsonResponse(APPROVED_TOOL_USE);
+    const prompt = body.messages[0].content;
+    if (body.max_tokens === 1) {
+      return jsonResponse({ stop_reason: "max_tokens", content: [], usage: usageFor(prompt.length, ratio) });
+    }
+    sizes[ratio] = prompt.length;
+    return jsonResponse({
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "SENHA_INICIAL" }],
+      usage: usageFor(prompt.length, ratio),
+    });
+  };
+  await probe(fakeProvider(), { fetchImpl: capture(4.41) });
+  await probe(fakeProvider(), { fetchImpl: capture(5.353) });
+  assert.ok(sizes[5.353] > sizes[4.41], "quem conta mais caracteres por token recebe mais caracteres");
+});
+
+test("probe: contextTokens é o que a prova alcançou, medido na resposta do canário", async () => {
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryAnswer: "SENHA_INICIAL" });
+  const result = await probe(fakeProvider({ minContext: 65536 }), { fetchImpl });
+  assert.equal(typeof result.contextTokens, "number");
+  assert.ok(result.contextTokens >= proofFloor(65536));
+});
+
+test("probe: canário reprovado não pronuncia contextTokens — num servidor que trunca, a contagem é de depois do corte", async () => {
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryAnswer: "A senha é SENHA_FINAL" });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, false);
+  assert.equal(result.contextTokens, null);
+});
+
+test("probe: Provedor que responde sem usage aprova o canário e devolve contextTokens null", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryAnswer: "SENHA_INICIAL",
+    calibrationRatio: null,
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, true);
+  assert.equal(result.contextTokens, null);
+  assert.equal(result.contextTimedOut, false);
+});
+
+test("probe: timeout na calibragem vira contextTimedOut sem disparar o pedido grande", async () => {
+  const big = [];
+  const fetchImpl = async (url, opts) => {
+    if (url.endsWith("/api/tags")) return jsonResponse({});
+    const body = JSON.parse(opts.body);
+    if (body.tools) return jsonResponse(APPROVED_TOOL_USE);
+    if (body.max_tokens === 1) throw timeoutError();
+    big.push(body.messages[0].content.length);
+    return jsonResponse({ stop_reason: "end_turn", content: [{ type: "text", text: "SENHA_INICIAL" }] });
+  };
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextTimedOut, true);
+  assert.equal(result.contextOk, false);
+  assert.equal(result.contextTokens, null);
+  assert.deepEqual(big, [], "o prefill caro não é pago depois de a prova pequena estourar");
+});
+
+test("probe: erro que não é timeout na calibragem cai na constante e deixa o canário rodar", async () => {
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryAnswer: "SENHA_INICIAL",
+    calibrationError: new Error("status 500"),
+  });
+  const result = await probe(fakeProvider(), { fetchImpl });
+  assert.equal(result.contextOk, true);
+  assert.equal(result.contextTimedOut, false);
+});
+
+test("probe: o canário mira abaixo do contexto declarado, para não truncar a si mesmo", async () => {
+  // O num_ctx do Ollama cobre prompt mais resposta: um prompt de exatamente
+  // minContext estoura no Provedor cujo OLLAMA_CONTEXT_LENGTH bate com o
+  // declarado, e ele reprovaria por integridade que tem.
+  const fetchImpl = mockFetch({ toolUseResponse: APPROVED_TOOL_USE, canaryAnswer: "SENHA_INICIAL" });
+  const result = await probe(fakeProvider({ minContext: 131072 }), { fetchImpl });
+  assert.ok(result.contextTokens < 131072, "sobra orçamento de saída dentro do contexto declarado");
+});
+
+test("describeDegradation: prova aquém do alvo cita o medido contra o declarado", () => {
+  const short = {
+    reachable: true,
+    toolUse: true,
+    contextOk: true,
+    contextTimedOut: false,
+    outputExhausted: false,
+    contextTokens: 100201,
+    redirect: null,
+  };
+  const msg = describeDegradation(short, 131072, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /100201/);
+  assert.match(msg, /131072/);
+  assert.match(msg, /nightProvider\.minContext/);
+});
+
+test("describeDegradation: prova aquém do alvo assume o defeito da sonda, sem mandar reconfigurar o host", () => {
+  const short = { reachable: true, toolUse: true, contextOk: true, contextTokens: 100201, redirect: null };
+  const msg = describeDegradation(short, 131072, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /fora de suspeita/);
+  assert.doesNotMatch(msg, /trunca/);
+});
+
+test("describeDegradation: prova dentro do alvo devolve null, como qualquer sonda aprovada", () => {
+  const proved = { reachable: true, toolUse: true, contextOk: true, contextTokens: 130205, redirect: null };
+  assert.equal(describeDegradation(proved, 131072, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900), null);
+});
+
+test("describeDegradation: canário sem medida não reprova — Provedor íntegro não morre por um campo que ele não devolve", () => {
+  const notMeasured = { reachable: true, toolUse: true, contextOk: true, contextTokens: null, redirect: null };
+  assert.equal(
+    describeDegradation(notMeasured, 131072, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900),
+    null,
+  );
+});
+
+test("describeDegradation: prova aquém com contextOk verdadeiro nunca recebe a prosa de truncamento", () => {
+  // A cascata decide por `contextOk`: com a senha do início na resposta, o
+  // prompt não foi cortado, e um input_tokens baixo é a sonda que se
+  // dimensionou mal, não o servidor cortando.
+  const short = { reachable: true, toolUse: true, contextOk: true, contextTokens: 100201, redirect: null };
+  const truncated = { reachable: true, toolUse: true, contextOk: false, contextTokens: null, redirect: null };
+  const shortMsg = describeDegradation(short, 131072, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  const truncMsg = describeDegradation(truncated, 131072, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(truncMsg, /trunca o prompt em silêncio/);
+  assert.doesNotMatch(shortMsg, /trunca o prompt em silêncio/);
+});
+
+test("describeAvailability: com a sonda em mãos, a linha verde diz quantos tokens foram provados", () => {
+  const provider = resolve(baseCfg({ nightProvider: { minContext: 131072 } }), { night: true });
+  const line = describeAvailability(provider, { contextOk: true, contextTokens: 130205 });
+  assert.match(line, /130205/);
+  assert.match(line, /131072/);
+});
+
+test("describeAvailability: sem medida, a linha verde diz que o tamanho não foi provado", () => {
+  const provider = resolve(baseCfg(), { night: true });
+  const line = describeAvailability(provider, { contextOk: true, contextTokens: null });
+  assert.match(line, /não provado/);
+  assert.match(line, /estimativa/);
+});
+
+test("describeAvailability: sem resultado de sonda, a linha é a de sempre", () => {
+  const provider = resolve(baseCfg(), { night: true });
+  assert.equal(describeAvailability(provider), `Provedor local disponível (modelo ${provider.model})`);
+});
+
+test("describeProbeStart: anuncia que o canário mede antes de montar o prompt grande", () => {
+  const line = describeProbeStart(resolve(baseCfg(), { night: true }));
+  assert.match(line, /mede quantos tokens/);
+});
+
+test("describeDegradation: prova a alguns tokens do alvo aprova — o piso desconta a resolução da calibragem", () => {
+  // Medido em simulação: um Provedor de razão 4,41 com 131072 declarados fecha
+  // em 130007 contra um alvo de 130048. Os 41 tokens são a razão saindo da
+  // divisão de dois inteiros, e reprovar aqui seria a sonda acusando o Provedor
+  // de um arredondamento dela.
+  const rounded = { reachable: true, toolUse: true, contextOk: true, contextTokens: 130007, redirect: null };
+  assert.equal(describeDegradation(rounded, 131072, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900), null);
+});
+
+test("describeDegradation: a folga do piso não cobre os 7% que a constante velha errava", () => {
+  // 121592 tokens contra 131072 declarados é o que a issue #55 mediu com
+  // CANARY_CHARS_PER_TOKEN dimensionando o prompt.
+  const stale = { reachable: true, toolUse: true, contextOk: true, contextTokens: 121592, redirect: null };
+  const msg = describeDegradation(stale, 131072, "http://host.docker.internal:11434", "ralph-alvo-1abc", 900);
+  assert.match(msg, /121592/);
+});
+
+test("probe: o envelope do template é descontado do alvo, e o prompt não passa do contexto declarado", async () => {
+  // Contra `devstral:24b` o envelope são 1226 tokens. Sem descontá-lo, um alvo
+  // de 3072 virava um prompt de 4341 — acima do próprio minContext declarado,
+  // e o Provedor cujo OLLAMA_CONTEXT_LENGTH bate com o declarado truncaria a
+  // frente e reprovaria por integridade que tem.
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryAnswer: "SENHA_INICIAL",
+    calibrationRatio: 5,
+    calibrationEnvelope: 1226,
+  });
+  const result = await probe(fakeProvider({ minContext: 4096 }), { fetchImpl });
+  assert.ok(result.contextTokens <= 4096, `prompt de ${result.contextTokens} tokens contra 4096 declarados`);
+  assert.ok(result.contextTokens >= proofFloor(4096), `prompt de ${result.contextTokens} tokens contra o alvo 3072`);
+});
+
+test("probe: envelope grande não sobra do orçamento de saída reservado", async () => {
+  // A margem entre o provado e o declarado tem que caber a resposta inteira:
+  // é o CANARY_MAX_TOKENS que o pedido pede.
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryAnswer: "SENHA_INICIAL",
+    calibrationRatio: 5,
+    calibrationEnvelope: 1226,
+  });
+  const result = await probe(fakeProvider({ minContext: 131072 }), { fetchImpl });
+  assert.ok(131072 - result.contextTokens >= 1000, `sobraram ${131072 - result.contextTokens} tokens de saída`);
+});
+
+test("probe: minContext menor que o envelope não estoura a sonda", async () => {
+  // O config aceita qualquer inteiro positivo em minContext, e o filler não
+  // pode nascer negativo por causa disso.
+  const fetchImpl = mockFetch({
+    toolUseResponse: APPROVED_TOOL_USE,
+    canaryAnswer: "SENHA_INICIAL",
+    calibrationRatio: 5,
+    calibrationEnvelope: 1226,
+  });
+  const result = await probe(fakeProvider({ minContext: 512 }), { fetchImpl });
+  assert.equal(result.contextOk, true);
 });

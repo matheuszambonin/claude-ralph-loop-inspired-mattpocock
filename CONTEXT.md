@@ -93,6 +93,17 @@ ociosa em vez de token pago — não para sigilo, e não para velocidade.
 Ortogonal ao AFK: uma iteração pode ser assistida e ainda assim noturna.
 _Avoid_: modo offline, modo local, modo barato
 
+**Canário**:
+A prova que mede o contexto do Provedor: um prompt com uma senha no início e
+outra no fim, que só aprova se a resposta cita a do início. Ele carrega dois
+números que não se confundem. **Contexto declarado** é o `minContext` do config,
+que o `OLLAMA_CONTEXT_LENGTH` do host espelha — o que o operador afirma que o
+Provedor aguenta. **Contexto provado** é quanto o canário fez o Provedor ler de
+fato, sempre menor que o declarado pela margem do **Orçamento de saída**, que
+precisa caber junto. Aprovar sem medir o segundo foi o defeito que a issue #55
+consertou: a prova dizia exigir 131k e exigia 100k.
+_Avoid_: teste de contexto, prova de tamanho, sonda
+
 **Orçamento de saída**:
 Quantos tokens o Provedor pode escrever numa resposta. É teto do pedido, não
 capacidade do Provedor, e não se confunde com o contexto, que é o que ele

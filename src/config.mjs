@@ -119,8 +119,9 @@ export function loadConfig(root) {
 // `"15m"` aqui é o erro provável, não o exótico.
 const MAX_PROBE_TIMEOUT_SECONDS = 4_294_967;
 
-// O canário monta um prompt de ~4 caracteres por token declarado
-// (`canaryFiller` em provider.mjs), então um `minContext` absurdo estoura o
+// O canário monta um prompt de alguns caracteres por token declarado — a razão
+// medida contra o próprio Provedor desde a issue #55, limitada por
+// `CANARY_RATIO_MAX` em provider.mjs —, então um `minContext` absurdo estoura o
 // limite de string do V8 dentro da sonda — a mesma exceção engolida, o mesmo
 // misdiagnóstico sobre o modelo. Dez milhões de tokens é ordens de grandeza
 // acima do que qualquer modelo local aceita e ainda monta sem estourar.

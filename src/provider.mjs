@@ -99,24 +99,128 @@ const CANARY_MAX_TOKENS = 1024;
 const CANARY_START = "SENHA_INICIAL";
 const CANARY_END = "SENHA_FINAL";
 const CANARY_UNIT = "texto de preenchimento sem significado, só para ocupar espaço no contexto. ";
-// Razão medida na máquina de referência da issue #29: 45 mil caracteres de
-// CANARY_UNIT ocupam ~11 mil tokens. Arredonda pra cima na hora de converter
-// minContext em caracteres — errar para menos aprova um servidor que não
-// aguenta o contexto que o operador declarou, exatamente o que o canário
-// existe para impedir (issue #42).
+/**
+ * Razão de fallback, medida na máquina de referência da issue #29: 45 mil
+ * caracteres de `CANARY_UNIT` ocupam ~11 mil tokens.
+ *
+ * Ela deixou de dimensionar o canário na issue #55 e só entra quando a
+ * calibragem não tem o que ler — Provedor que responde sem `usage`. A
+ * aprovação que sai daí vem marcada como não provada, porque é estimativa.
+ *
+ * Duas medições dizem por que ela não podia continuar sendo a régua: 4,41
+ * contra `qwen3-coder:30b-a3b-q4_K_M` e 5,353 contra `ornith:9b`. As duas não
+ * divergem por erro de medição, divergem porque a razão é propriedade do
+ * tokenizer do modelo. Não há constante certa para escrever aqui.
+ *
+ * Continua sendo 4,091 e não 5,353 justamente por ser fallback: errando para
+ * menos ela aprova um Provedor que não provou o tamanho todo, e o texto da
+ * aprovação diz isso; errando para mais ela estoura 21% num modelo de razão
+ * 4,4 e acusa de truncamento quem está íntegro.
+ */
 const CANARY_CHARS_PER_TOKEN = 45000 / 11000;
 
-function canaryFiller(minContext) {
-  const charsNeeded = Math.ceil(minContext * CANARY_CHARS_PER_TOKEN);
+/**
+ * Amostras da calibragem, em caracteres de `CANARY_UNIT` puro.
+ *
+ * Dois pontos e não um: o `input_tokens` de um pedido traz junto o envelope do
+ * chat (template do modelo, marcadores de papel, system prompt injetado), que
+ * não é filler. Ele é grande — 1226 tokens contra `devstral:24b` —, e com um
+ * ponto só a razão sairia baixa na mesma proporção. Idêntico nos dois pedidos,
+ * ele some na subtração.
+ *
+ * Amostras pequenas de propósito: elas custam prefill antes da prova cara. A
+ * diferença entre as duas contagens é ~800 tokens, e é ela que dá a resolução
+ * da razão — veja `CANARY_PROOF_SLACK`, que existe para absorver isso.
+ */
+const CANARY_CALIBRATION_CHARS = [4000, 8000];
+
+/**
+ * Faixa em que uma razão medida é crível — nenhum tokenizer de texto natural
+ * sai dela. Existe porque a razão vira tamanho de string: Provedor que devolve
+ * `usage` torta, com as duas amostras contadas igual ou quase, faria o
+ * `repeat()` abaixo pedir centenas de megabytes, e a sonda morreria de
+ * `RangeError` em vez de reprovar.
+ */
+const CANARY_RATIO_MIN = 1;
+const CANARY_RATIO_MAX = 8;
+
+/**
+ * Caracteres de `CANARY_UNIT` que ocupam `tokens` tokens no Provedor, dada a
+ * razão. Pura de propósito (issue #55): a razão entra como argumento porque é
+ * propriedade do tokenizer do modelo, e tê-la fixa numa constante foi o defeito
+ * que este parâmetro conserta.
+ */
+export function canaryFiller(tokens, charsPerToken) {
+  const charsNeeded = Math.ceil(tokens * charsPerToken);
   const repeats = Math.ceil(charsNeeded / CANARY_UNIT.length);
   return CANARY_UNIT.repeat(repeats);
 }
 
-function canaryPrompt(minContext) {
+function canaryPrompt(fillerTokens, charsPerToken) {
   return (
-    `${CANARY_START}\n\n${canaryFiller(minContext)}\n\n${CANARY_END}\n\n` +
+    `${CANARY_START}\n\n${canaryFiller(fillerTokens, charsPerToken)}\n\n${CANARY_END}\n\n` +
     "Qual é a senha que aparece logo no início deste texto? Responda só com a senha, nada mais."
   );
+}
+
+/**
+ * Quantos tokens o canário se propõe a provar: o declarado menos o orçamento
+ * de saída.
+ *
+ * O `num_ctx` do Ollama cobre prompt mais resposta, então um prompt de
+ * exatamente `minContext` estoura no Provedor cujo `OLLAMA_CONTEXT_LENGTH` bate
+ * com o declarado — o par que `describeDegradation` prescreve. Ele truncaria a
+ * frente e reprovaria por integridade que tem. A banda entre alvo e declarado é
+ * o próprio teto de saída: 0,78% em 131072.
+ *
+ * O piso em zero é para o `minContext` menor que o próprio orçamento de saída,
+ * que o config aceita (só exige inteiro positivo): ali não sobra nada para
+ * provar, e sem o piso o `repeat()` de `canaryFiller` lançaria `RangeError`
+ * com contagem negativa — exceção que a sonda engole e devolve como veredito
+ * sobre o modelo.
+ */
+function canaryTarget(minContext) {
+  return Math.max(0, minContext - CANARY_MAX_TOKENS);
+}
+
+/**
+ * Folga do piso da conferência, em fração do alvo.
+ *
+ * A razão sai da divisão de dois inteiros, então ela carrega a resolução da
+ * própria calibragem: ±1 token em cada contagem move o prompt final em
+ * ~2/(T2−T1) do tamanho pedido, uns 0,2% com as amostras de 4 e 8 mil
+ * caracteres. Medido em simulação, isso põe a prova 41 tokens abaixo do alvo
+ * num Provedor de razão 4,41 com 131072 declarados — o piso cru reprovaria por
+ * arredondamento, que é a sonda acusando o Provedor de um erro dela.
+ *
+ * Meio por cento cobre essa resolução com folga de duas vezes e ainda pega o
+ * que a issue #55 mediu: 7,3% num modelo e 24% no outro.
+ */
+const CANARY_PROOF_SLACK = 0.005;
+
+function canaryProofFloor(minContext) {
+  return Math.floor(canaryTarget(minContext) * (1 - CANARY_PROOF_SLACK));
+}
+
+/**
+ * Quanto filler o canário precisa para que o prompt **inteiro** meça o alvo:
+ * o alvo menos o envelope do chat, menos as senhas e a pergunta.
+ *
+ * O envelope entra aqui porque medi-lo desmentiu a estimativa da triagem, que
+ * o supunha de 10 a 20 tokens: contra `devstral:24b` no Ollama 0.33.0 ele são
+ * **1226**, um system prompt inteiro que o template do modelo injeta. Sem
+ * descontá-lo, um alvo de 3072 vira um prompt de 4341 — 41% acima do pedido, e
+ * acima do próprio `minContext` declarado. O Provedor cujo
+ * `OLLAMA_CONTEXT_LENGTH` bate com o declarado truncaria a frente e reprovaria
+ * por integridade que tem, que é exatamente o que `canaryTarget` existe para
+ * evitar. Reservar 1024 tokens não adianta contra um envelope maior que isso.
+ *
+ * Ele é medido junto com a razão e não estimado, pela mesma razão de tudo aqui:
+ * é propriedade do template do modelo, e o próximo modelo tem outro.
+ */
+function canaryFillerTokens(minContext, { charsPerToken, envelopeTokens }) {
+  const scaffold = Math.ceil(canaryPrompt(0, charsPerToken).length / charsPerToken);
+  return Math.max(0, canaryTarget(minContext) - envelopeTokens - scaffold);
 }
 
 /**
@@ -254,10 +358,56 @@ function isTimeout(err) {
 }
 
 /**
+ * Mede o tamanho que este Provedor dá ao texto do canário (issue #55):
+ * `{ charsPerToken, envelopeTokens }`, ou `null` quando não dá para medir.
+ *
+ * Dois pedidos de filler puro — sem senha, sem pergunta, sem `tools` —, a razão
+ * saindo da diferença entre as duas contagens de `usage.input_tokens`. É o que
+ * substitui a estimativa por constante: a razão é do tokenizer do modelo, e
+ * qualquer número escrito no código só vale para o modelo em que foi medido.
+ *
+ * O envelope é o que sobra de uma contagem depois de descontar o filler pela
+ * razão: o template do modelo, os marcadores de papel e o system prompt que o
+ * Ollama injeta sozinho. Ele cancela na subtração que dá a razão, e é por isso
+ * que os pontos são dois; a subtração não o faz sumir do prompt final, e
+ * `canaryFillerTokens` é quem cuida disso.
+ *
+ * `max_tokens: 1` nos dois: nenhum byte da resposta é lido, só o `usage`. A
+ * lição da issue #64 (não ler o bloco de raciocínio) não alcança aqui, porque
+ * lá o critério dependia do texto.
+ *
+ * Teto igual ao das outras pernas, sem botão novo no config: são dois pedidos
+ * de mil tokens, e a perna de `tool_use` já rodou antes e absorveu o
+ * carregamento do modelo na GPU (issue #60). O timeout sobe para quem chama —
+ * um teto que a prova pequena não alcança é um teto que a grande também não
+ * alcança (issue #59), e o pedido grande nem chega a sair.
+ */
+async function calibrate(fetchImpl, provider) {
+  // Razão 1 é um caractere por token, que aqui é só o jeito de pedir um filler
+  // de N caracteres pela mesma função que monta o do canário.
+  const samples = CANARY_CALIBRATION_CHARS.map((chars) => canaryFiller(chars, 1));
+  const counted = [];
+  for (const content of samples) {
+    const res = await postMessages(fetchImpl, provider, {
+      model: provider.model,
+      max_tokens: 1,
+      messages: [{ role: "user", content }],
+    });
+    const tokens = res.usage?.input_tokens;
+    if (typeof tokens !== "number") return null;
+    counted.push(tokens);
+  }
+  const charsPerToken = (samples[1].length - samples[0].length) / (counted[1] - counted[0]);
+  if (!(charsPerToken >= CANARY_RATIO_MIN && charsPerToken <= CANARY_RATIO_MAX)) return null;
+  const envelopeTokens = Math.max(0, Math.round(counted[0] - samples[0].length / charsPerToken));
+  return { charsPerToken, envelopeTokens };
+}
+
+/**
  * Impura, mas só de rede (issue #32): faz as três provas do Provedor local a
  * partir do host, com o cliente `httpJson` acima — biblioteca padrão, zero
  * dependência nova. Devolve
- * `{ reachable, toolUse, contextOk, contextTimedOut, outputExhausted, redirect }`.
+ * `{ reachable, toolUse, contextOk, contextTimedOut, outputExhausted, contextTokens, redirect }`.
  *
  * Inalcançável (erro de rede ou `/api/tags` não responde) encurta as outras
  * duas provas para reprovadas: sem alcance não há como testar o resto, e uma
@@ -280,6 +430,27 @@ function isTimeout(err) {
  * um servidor com contexto real menor que o declarado trunca o começo e
  * reprova, em vez de passar numa prova de tamanho fixo sem relação com o que
  * o operador configurou.
+ *
+ * Ele mede o próprio tamanho antes de montá-lo (issue #55): `calibrate()` roda
+ * primeiro, e a razão que sai de lá é a que converte tokens em caracteres. A
+ * constante existia porque medir parecia caro, e a medição mostrou que ela
+ * errava 7% num modelo e 24% em outro, sempre aprovando menos contexto do que o
+ * operador declarou. O alvo é `canaryTarget(minContext)`, não o declarado
+ * cheio, e a conferência é piso (`canaryProofFloor`): mais tokens que o pedido,
+ * com a senha do início na resposta, é o Provedor provando mais do que foi
+ * exigido.
+ *
+ * Não reescala. Repetir o pedido grande para acertar o tamanho paga o prefill
+ * duas vezes — 2153s num único pedido de 131k na medição da issue #54 —, e
+ * medir antes é justamente o que torna o reescalar desnecessário.
+ *
+ * `contextTokens` são os tokens que a prova alcançou, ou `null` quando não deu
+ * para medir. Número e não booleano porque é o que o operador precisa saber: é
+ * a única capacidade do Provedor que o `doctor` mede em vez de repetir do
+ * config. Ele só se pronuncia com `contextOk` verdadeiro, e a regra é dura: um
+ * servidor que trunca reporta o `input_tokens` de depois do corte, então
+ * "menos tokens que o alvo" seria ambíguo entre a sonda ter se medido mal e o
+ * servidor ter cortado. A senha desempata, e é para isso que ela existe.
  *
  * O critério lê só os blocos de texto, e isso é escolha (issue #64): o modelo
  * que raciocina antes de responder cita as duas senhas enquanto pensa, e
@@ -306,6 +477,7 @@ export async function probe(provider, { fetchImpl = httpJson } = {}) {
     contextOk: false,
     contextTimedOut: false,
     outputExhausted: false,
+    contextTokens: null,
     redirect: null,
   };
   try {
@@ -338,11 +510,31 @@ export async function probe(provider, { fetchImpl = httpJson } = {}) {
   let contextOk = false;
   let contextTimedOut = false;
   let outputExhausted = false;
+  let contextTokens = null;
+
+  // A calibragem vem antes do canário e pode encerrar a prova sozinha: teto
+  // estourado aqui é teto estourado lá, e o pedido grande não sai.
+  //
+  // Sem medida, o canário volta ao dimensionamento de antes da issue #55: a
+  // constante e envelope nenhum. Ele erra para mais e para menos, e é por isso
+  // que a aprovação que sai dali vem marcada como não provada.
+  let sizing = { charsPerToken: CANARY_CHARS_PER_TOKEN, envelopeTokens: 0 };
+  try {
+    sizing = (await calibrate(fetchImpl, provider)) ?? sizing;
+  } catch (err) {
+    redirect ??= err?.redirect ?? null;
+    if (isTimeout(err)) {
+      return { reachable: true, toolUse, contextOk, contextTimedOut: true, outputExhausted, contextTokens, redirect };
+    }
+  }
+
   try {
     const canaryRes = await postMessages(fetchImpl, provider, {
       model: provider.model,
       max_tokens: CANARY_MAX_TOKENS,
-      messages: [{ role: "user", content: canaryPrompt(provider.minContext) }],
+      messages: [
+        { role: "user", content: canaryPrompt(canaryFillerTokens(provider.minContext, sizing), sizing.charsPerToken) },
+      ],
     });
     // Só os blocos de texto: é aqui que o raciocínio fica de fora (issue #64).
     const answered = (canaryRes.content ?? []).map((b) => b.text ?? "").join("");
@@ -357,13 +549,17 @@ export async function probe(provider, { fetchImpl = httpJson } = {}) {
     // o prompt inteiro seria afirmar o que não foi provado, e o vazio é o caso
     // que a medição do ticket mostra.
     outputExhausted = canaryRes.stop_reason === "max_tokens" && answered.trim() === "";
+    // Só com a senha do início em mãos: sem ela, um `input_tokens` baixo não
+    // distingue prompt curto de prompt cortado.
+    const read = canaryRes.usage?.input_tokens;
+    contextTokens = contextOk && typeof read === "number" ? read : null;
   } catch (err) {
     contextOk = false;
     contextTimedOut = isTimeout(err);
     redirect ??= err?.redirect ?? null;
   }
 
-  return { reachable: true, toolUse, contextOk, contextTimedOut, outputExhausted, redirect };
+  return { reachable: true, toolUse, contextOk, contextTimedOut, outputExhausted, contextTokens, redirect };
 }
 
 /**
@@ -470,10 +666,25 @@ export async function preload(provider, { fetchImpl = httpJson } = {}) {
  * `null` para o Provedor da API paga (issue #40) — a garantia de que a saída
  * do `doctor` sem night mode fica idêntica à de hoje vive aqui, na função
  * pura, e não só no gate do comando.
+ *
+ * Com o resultado da sonda em mãos (issue #55), a linha diz quantos tokens o
+ * canário provou contra quantos o operador declarou. É a única saída do
+ * `doctor` que informa capacidade medida em vez de repetir o que está no
+ * config, e por isso ela não some quando a medição falha: o canário que rodou
+ * por estimativa aprova dizendo que o tamanho não foi provado, em vez de deixar
+ * a aprovação parecer a mesma dos outros dias.
  */
-export function describeAvailability(provider) {
+export function describeAvailability(provider, probeResult = null) {
   if (provider.kind !== "local") return null;
-  return `Provedor local disponível (modelo ${provider.model})`;
+  const line = `Provedor local disponível (modelo ${provider.model})`;
+  if (!probeResult) return line;
+  if (probeResult.contextTokens == null) {
+    return (
+      `${line}, com o tamanho do contexto não provado: o Provedor respondeu sem a contagem de tokens do ` +
+      "prompt, e o canário foi dimensionado por estimativa."
+    );
+  }
+  return `${line}, ${probeResult.contextTokens} tokens de contexto provados contra ${provider.minContext} declarados`;
 }
 
 /**
@@ -493,6 +704,12 @@ export function describeAvailability(provider) {
  * provas de inferência, e prometer o número como total mentiria pra quem
  * cronometra.
  *
+ * A calibragem do canário (issue #55) é anunciada como etapa dele, não como
+ * quarta prova: ela não tem veredito próprio, e contá-la junto faria o operador
+ * procurar um quarto resultado que nunca aparece. Está aqui porque são dois
+ * pedidos a mais antes do silêncio longo, e quem cronometra precisa saber que
+ * o relógio já começou.
+ *
  * `null` para o Provedor da API paga, mesma convenção de
  * `describeAvailability`: o modo diurno não ganha linha nova.
  */
@@ -500,7 +717,8 @@ export function describeProbeStart(provider) {
   if (provider.kind !== "local") return null;
   return (
     `Sondando o Provedor local em ${provider.baseUrl} (modelo ${provider.model}) — ` +
-    `tool_use e canário de contexto, cada prova com teto de ${provider.probeTimeoutSeconds}s.`
+    `tool_use e canário de contexto, cada prova com teto de ${provider.probeTimeoutSeconds}s. ` +
+    "O canário mede quantos tokens o Provedor conta antes de montar o prompt grande."
   );
 }
 
@@ -509,7 +727,7 @@ export function describeProbeStart(provider) {
  * de usuário diz o comando que conserta"). Sonda aprovada em tudo devolve
  * `null` — nenhuma linha pro `doctor` pintar. A ordem dos ramos é o
  * comportamento: redirect → alcance → timeout → tool_use → orçamento de saída →
- * truncamento.
+ * truncamento → prova aquém do alvo.
  *
  * O redirect (issue #61) vem antes de tudo porque ele explica as reprovações
  * que vêm depois, e nenhuma delas explica o redirect: um 3xx em `/api/tags`
@@ -551,9 +769,25 @@ export function describeProbeStart(provider) {
  * manda o operador reconfigurar o host por um problema que não é de contexto,
  * e é o Provedor íntegro que paga — ele leu o prompt inteiro.
  *
+ * A prova aquém do alvo (issue #55) fica por último porque só existe depois de
+ * o canário aprovar: com `contextOk` verdadeiro a senha do início voltou, o
+ * prompt não foi cortado, e o que sobrou é a sonda ter se dimensionado abaixo
+ * do que prometeu provar. Vir antes do truncamento inverteria a leitura de um
+ * `input_tokens` baixo, que num servidor que corta é a contagem de depois do
+ * corte. A prosa assume a culpa e não manda reconfigurar o host por um bug
+ * nosso.
+ *
+ * Prova sem medida — `contextTokens` nulo, Provedor que responde sem `usage` —
+ * aprova. O tamanho não foi provado, e quem diz isso é a linha de aprovação de
+ * `describeAvailability`: reprovar aqui mataria o loop de um Provedor íntegro
+ * por causa de um campo que ele não devolve, que é a falha que as issues #56,
+ * #59, #60 e #64 consertaram uma de cada vez.
+ *
  * `minContext` prescreve o mesmo número que o canário exigiu (issue #42) —
- * quem chama passa `provider.minContext`, o mesmo valor que `probe()` usou
- * para dimensionar o prompt. `baseUrl` é o mesmo raciocínio para a issue
+ * quem chama passa `provider.minContext`, o mesmo valor de que `probe()` tira
+ * o alvo do prompt. É o declarado que vai para a prosa, e não o alvo: o par com
+ * `OLLAMA_CONTEXT_LENGTH` é sobre o contexto do host, que precisa caber prompt
+ * e resposta. `baseUrl` é o mesmo raciocínio para a issue
  * #45: dado do Provedor, não da sonda, e quem chama já tem `provider.baseUrl`
  * (já traduzido por `translateLoopback` em `resolve()`) em mãos.
  *
@@ -624,6 +858,20 @@ export function describeDegradation(probeResult, minContext, baseUrl, sandboxNam
       "Provedor local trunca o prompt em silêncio antes do fim do contexto. Rode o Ollama do host com " +
       `OLLAMA_CONTEXT_LENGTH=${minContext} e reinicie o serviço — esse número e nightProvider.minContext ` +
       "são um par que precisa bater, porque o Ralph nunca envia num_ctx."
+    );
+  }
+  // Daqui pra baixo o canário passou: a senha do início voltou, e o Provedor
+  // está fora de suspeita. O que resta é o tamanho que a prova de fato alcançou
+  // (issue #55).
+  if (probeResult.contextTokens == null) return null;
+  if (probeResult.contextTokens < canaryProofFloor(minContext)) {
+    return (
+      `Provedor local leu o prompt do canário inteiro, mas o canário nasceu curto: provou ` +
+      `${probeResult.contextTokens} tokens contra os ${minContext} de nightProvider.minContext. O Provedor está ` +
+      "fora de suspeita e o host não tem o que consertar — quem errou o próprio tamanho foi a sonda, e subir " +
+      `OLLAMA_CONTEXT_LENGTH não muda esta linha. Enquanto ela aparecer, ${probeResult.contextTokens} é o ` +
+      "contexto que você tem provado: declarar esse número em nightProvider.minContext no .ralph/config.json, " +
+      "com OLLAMA_CONTEXT_LENGTH do host acompanhando, é a saída que não mente sobre o tamanho."
     );
   }
   return null;
