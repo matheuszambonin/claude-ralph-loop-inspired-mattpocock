@@ -276,7 +276,7 @@ async function cmdDoctor(flags) {
       cfg.sandboxName,
       provider.probeTimeoutSeconds,
     );
-    degradation ? warn(degradation) : ok(describeProviderAvailability(provider));
+    degradation ? warn(degradation) : ok(describeProviderAvailability(provider, probeResult));
   }
 
   // Só o code-review-graph precisa de binário no sandbox, mesma guarda de
